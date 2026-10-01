@@ -302,7 +302,8 @@ export class ProviderConversionReviewApprovalService {
   ): ProviderConversionDecisionDto {
     const previous = latest.decision;
     if (
-      previous.occurrence.eventName !== "Purchase" ||
+      (previous.occurrence.eventName !== "Purchase" &&
+        previous.occurrence.eventName !== "InitiateCheckout") ||
       previous.leadResolution.status !== "resolved"
     ) {
       throw new ConflictException(
@@ -404,13 +405,17 @@ export class ProviderConversionReviewApprovalService {
     const triggerType = rule.conversionRule.triggerType;
     if (
       triggerType !== "structured_catalog" &&
-      triggerType !== "message_phrase"
+      triggerType !== "message_phrase" &&
+      triggerType !== "provider_automation"
     ) {
       throw new ConflictException(
         "O tipo desta regra nao aceita revisao de compra",
       );
     }
-    if (rule.conversionRule.eventName !== "Purchase") {
+    if (
+      rule.conversionRule.eventName !== "Purchase" &&
+      rule.conversionRule.eventName !== "InitiateCheckout"
+    ) {
       throw new ConflictException("A regra revisada nao representa uma compra");
     }
 
@@ -422,7 +427,7 @@ export class ProviderConversionReviewApprovalService {
       providerRuleId: rule.id,
       conversionRuleId: rule.conversionRuleId,
       triggerType,
-      eventName: "Purchase" as const,
+      eventName: rule.conversionRule.eventName as "Purchase",
       mode: rule.mode,
       active: rule.conversionRule.active && rule.removedAt === null,
       authorScope: rule.messageAuthorScope,
