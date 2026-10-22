@@ -22,24 +22,112 @@ export type MetaCapiPayloadInput = {
   testEventCode?: string | null;
 };
 
-export type MetaCapiPayload = {
-  data: Array<{
-    event_name: string;
-    event_time: number;
-    event_id: string;
-    action_source: "business_messaging";
-    messaging_channel: "whatsapp";
-    user_data: {
-      ph: string[];
-      ctwa_clid: string;
-      page_id: string;
+/**
+ * Emenda Implatec (Lead Ads): um lead de formulário instantâneo entra no fluxo
+ * com o `lead_id` da Meta gravado em `ctwaClid`. Esse id é sempre numérico, de
+ * 15 a 17 dígitos; um `ctwa_clid` real é uma string opaca com letras. Quando o
+ * valor casa com este padrão, o evento sai no formato de CRM
+ * (`action_source: "system_generated"` + `user_data.lead_id`), que é o que a
+ * Meta exige para estágios de funil de leads de formulário.
+ */
+const META_LEAD_ID_PATTERN = /^\d{15,17}$/;
+
+export function isMetaLeadId(value: string | null | undefined): boolean {
+  return typeof value === "string" && META_LEAD_ID_PATTERN.test(value.trim());
+}
+
+export type MetaCapiCrmCustomData = ConversionEventCustomDataDto & {
+  lead_event_source: "RastrackDash";
+  event_source: "crm";
+};
+
+export type MetaCapiPayloadEvent =
+  | {
+      event_name: string;
+      event_time: number;
+      event_id: string;
+      action_source: "business_messaging";
+      messaging_channel: "whatsapp";
+      user_data: {
+        ph: string[];
+        ctwa_clid: string;
+        page_id: string;
+      };
+      custom_data: ConversionEventCustomDataDto;
+    }
+  | {
+      event_name: string;
+      event_time: number;
+      event_id: string;
+      action_source: "system_generated";
+      user_data: {
+        /** Sem hash. Número quando cabe em inteiro seguro; string acima disso. */
+        lead_id: number | string;
+      };
+      custom_data: MetaCapiCrmCustomData;
     };
-    custom_data: ConversionEventCustomDataDto;
-  }>;
+
+export type MetaCapiPayload = {
+  data: MetaCapiPayloadEvent[];
   test_event_code?: string;
 };
 
 export function buildMetaCapiPayload(
+  input: MetaCapiPayloadInput
+): MetaCapiPayload {
+  if (isMetaLeadId(input.ctwaClid)) {
+    return buildMetaCapiCrmPayload(input);
+  }
+  return buildMetaCapiCtwaPayload(input);
+}
+
+function buildMetaCapiCrmPayload(input: MetaCapiPayloadInput): MetaCapiPayload {
+  const baseCustomData = input.customData ?? {};
+  const catalogDefaults = buildCatalogCustomDataDefaults(
+    input.eventName,
+    input.eventId,
+    baseCustomData,
+    input.valueCents,
+  );
+  const customData: MetaCapiCrmCustomData = {
+    ...baseCustomData,
+    ...catalogDefaults,
+    ...(typeof input.valueCents === "number"
+      ? {
+          value: input.valueCents / 100,
+          currency:
+            normalizeCurrencyCode(input.currency) ?? DEFAULT_CURRENCY_CODE,
+        }
+      : normalizeCurrencyCode(input.currency)
+        ? { currency: normalizeCurrencyCode(input.currency)! }
+        : {}),
+    ...(input.contentName ? { content_name: input.contentName } : {}),
+    lead_event_source: "RastrackDash",
+    event_source: "crm",
+  };
+  // O formato de CRM não leva ad_id: a atribuição vem do lead_id.
+  delete customData.ad_id;
+
+  const leadIdText = input.ctwaClid.trim();
+  const leadIdNumber = Number(leadIdText);
+  const leadId = Number.isSafeInteger(leadIdNumber) ? leadIdNumber : leadIdText;
+
+  return {
+    data: [
+      {
+        event_name: input.eventName,
+        event_time: Math.floor(input.eventTime.getTime() / 1000),
+        event_id: input.eventId,
+        action_source: "system_generated",
+        user_data: { lead_id: leadId },
+        custom_data: customData,
+      },
+    ],
+    ...(input.testEventCode ? { test_event_code: input.testEventCode } : {}),
+  };
+}
+
+function buildMetaCapiCtwaPayload(
   input: MetaCapiPayloadInput
 ): MetaCapiPayload {
   const baseCustomData = input.customData ?? {};
