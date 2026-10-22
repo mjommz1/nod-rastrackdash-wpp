@@ -18,6 +18,10 @@ export const metaWhatsappClassificationSchema = z.enum([
   "not_whatsapp",
 ]);
 
+/** Implatec: tipo da campanha no painel (WhatsApp x formulario Lead Ads). */
+export const metaCampaignKindSchema = z.enum(["whatsapp", "lead_form", "other"]);
+export const campaignKindFilterSchema = z.enum(["all", "whatsapp", "lead_form"]);
+
 export const metaWhatsappOverrideInputSchema = z.object({
   level: z.enum(["campaign", "adset", "ad"]),
   id: z.string().trim().min(1),
@@ -88,6 +92,7 @@ export const campaignReportRowSchema = z.object({
   /** Receita fora da linha por falta de cotação, na moeda original. */
   unconvertedRevenue: z.array(unconvertedRevenueSchema).optional(),
   whatsappClassification: metaWhatsappClassificationSchema.optional(),
+  campaignKind: metaCampaignKindSchema.optional(),
   configuredStatus: z.string().min(1).nullable().optional(),
   effectiveStatus: z.string().min(1).nullable().optional(),
   budget: metaBudgetSnapshotSchema.nullable().optional(),
@@ -143,6 +148,7 @@ export const reportTotalsSchema = campaignReportRowSchema.omit({
   adAccountId: true,
   adAccountName: true,
   whatsappClassification: true,
+  campaignKind: true,
   configuredStatus: true,
   effectiveStatus: true,
   budget: true,
@@ -424,8 +430,11 @@ export const reportFiltersSchema = z.object({
   whatsappClassification: z
     .enum(["whatsapp", "needs_review", "excluded", "all"])
     .default("whatsapp"),
+  campaignKind: campaignKindFilterSchema.optional(),
 });
 
+export type MetaCampaignKindDto = z.infer<typeof metaCampaignKindSchema>;
+export type CampaignKindFilterDto = z.infer<typeof campaignKindFilterSchema>;
 export type CampaignReportRowDto = z.infer<typeof campaignReportRowSchema>;
 export type ReportTotalsDto = z.infer<typeof reportTotalsSchema>;
 export type ReportCurrencyGroupDto = z.infer<typeof reportCurrencyGroupSchema>;

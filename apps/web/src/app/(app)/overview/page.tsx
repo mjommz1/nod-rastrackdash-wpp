@@ -68,6 +68,8 @@ async function getOverviewReport(
     const params = new URLSearchParams({
       includeDaily: "true",
       includeSummary: "true",
+      // Implatec: WhatsApp + formulario (Lead Ads); cada linha traz campaignKind.
+      campaignKind: "all",
     });
 
     if (filters.since && filters.until) {
@@ -677,6 +679,16 @@ export default async function OverviewPage({
         rangeLabel={report.rangeLabel}
       />
 
+      {dataAvailable ? (
+        <CampaignKindComparison
+          campaigns={campaigns}
+          fmt={fmt}
+          mixedCurrency={mixedCurrency}
+          rangeLabel={report.rangeLabel}
+          reportsHref={detailHref}
+        />
+      ) : null}
+
       <section
         className="surface-panel overview-funnel-panel"
         aria-label="Funil integrado"
@@ -920,6 +932,145 @@ function DailyConversationComparison({
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+/**
+ * Implatec: comparativo por tipo de campanha (WhatsApp x Formulario), com o
+ * funil de cada tipo somado a partir das linhas de campanha.
+ */
+function CampaignKindComparison({
+  campaigns,
+  fmt,
+  mixedCurrency,
+  rangeLabel,
+  reportsHref,
+}: {
+  campaigns: CampaignReportRowDto[];
+  fmt: (cents: number | null) => string;
+  mixedCurrency: boolean;
+  rangeLabel: string;
+  reportsHref: string;
+}) {
+  const kinds: Array<{
+    key: "whatsapp" | "lead_form";
+    label: string;
+    description: string;
+  }> = [
+    {
+      key: "whatsapp",
+      label: "Campanhas WhatsApp",
+      description: "Clique para o WhatsApp (CTWA)",
+    },
+    {
+      key: "lead_form",
+      label: "Campanhas de Formulario",
+      description: "Cadastros pelo formulario instantaneo (Lead Ads)",
+    },
+  ];
+  const moneyLabel = (cents: number | null) =>
+    mixedCurrency ? "Por moeda" : fmt(cents);
+  const hrefFor = (kind: string) => {
+    const [pathname, query] = reportsHref.split("?");
+    const params = new URLSearchParams(query ?? "");
+    params.set("campaignKind", kind);
+
+    return `${pathname}?${params.toString()}`;
+  };
+
+  return (
+    <section
+      className="surface-panel overview-campaign-kinds"
+      aria-label="Comparativo por tipo de campanha"
+    >
+      <div className="overview-section-heading">
+        <div>
+          <span className="eyebrow">Por tipo de campanha</span>
+          <h2>WhatsApp x Formulario</h2>
+          <p>
+            {rangeLabel}: o mesmo funil, separado pelo tipo de campanha, para
+            comparar o retorno de cada um.
+          </p>
+        </div>
+      </div>
+      <div className="overview-campaign-kind-grid">
+        {kinds.map((kind) => {
+          const rows = campaigns.filter(
+            (campaign) => campaign.campaignKind === kind.key,
+          );
+          const total = sumCampaigns(rows);
+          const stages = total.funnelSteps;
+
+          return (
+            <article
+              className={`overview-campaign-kind overview-campaign-kind-${kind.key}`}
+              key={kind.key}
+            >
+              <header>
+                <span className="micro-label">{kind.label}</span>
+                <p>{kind.description}</p>
+                <span className="tag">
+                  {rows.length} {rows.length === 1 ? "campanha" : "campanhas"}
+                </span>
+              </header>
+              {rows.length === 0 ? (
+                <p className="overview-campaign-kind-empty">
+                  Nenhuma campanha deste tipo no periodo.
+                </p>
+              ) : (
+                <>
+                  <div className="metric-grid overview-campaign-kind-metrics">
+                    <Metric
+                      label="Investimento"
+                      value={moneyLabel(total.spendCents)}
+                      delta={rangeLabel}
+                    />
+                    <Metric
+                      label="Leads novos"
+                      value={String(total.realConversations)}
+                      delta={
+                        total.costPerRealConversationCents !== null
+                          ? `Custo por lead ${moneyLabel(total.costPerRealConversationCents)}`
+                          : "Sem leads no periodo"
+                      }
+                    />
+                    <Metric
+                      label="Compras"
+                      value={String(total.purchases)}
+                      delta={purchaseBreakdownLabel(
+                        total.firstPurchases,
+                        total.repurchases,
+                      )}
+                    />
+                    <Metric
+                      label="Receita trafego"
+                      value={moneyLabel(total.trafficRevenueCents)}
+                      delta={`ROAS ${ratioLabel(total.roasAcquisition)}`}
+                    />
+                  </div>
+                  <ol className="overview-campaign-kind-funnel">
+                    {stages.map((stage) => (
+                      <li key={stage.key}>
+                        <span>{stage.label}</span>
+                        <strong>{stage.value}</strong>
+                        <small>
+                          {stage.costCents != null
+                            ? moneyLabel(stage.costCents)
+                            : "-"}
+                        </small>
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              )}
+              <Link className="text-link" href={hrefFor(kind.key)}>
+                Ver campanhas deste tipo
+              </Link>
+            </article>
+          );
+        })}
+      </div>
     </section>
   );
 }

@@ -135,6 +135,25 @@ export type ReportCsvResult = {
 
 type WhatsappClassificationFilter =
   "whatsapp" | "needs_review" | "excluded" | "all";
+/** Implatec: tipo da campanha no painel (WhatsApp x formulario Lead Ads). */
+type CampaignKind = "whatsapp" | "lead_form" | "other";
+type CampaignKindFilter = "all" | "whatsapp" | "lead_form";
+/** Lead criado pelo servico da Implatec a partir do formulario (Lead Ads). */
+const LEAD_FORM_SOURCE = "meta_leadgen";
+/** Destino "no proprio anuncio" = formulario instantaneo. */
+const LEAD_FORM_DESTINATION_TYPES = new Set([
+  "ON_AD",
+  "ON_POST",
+  "ON_VIDEO",
+  "ON_PAGE",
+  "ON_EVENT",
+]);
+const WHATSAPP_REPORT_CLASSIFICATIONS: WhatsappClassification[] = [
+  "auto_whatsapp",
+  "creative_whatsapp",
+  "detected_by_leads",
+  "manual_include",
+];
 type ReportNameScope = "campaign" | "adset" | "ad";
 type ReportStatusFilter = "all" | "active" | "paused";
 type ReportDeliveryFilter = "all" | "had_delivery";
@@ -153,6 +172,8 @@ type ReportFilterInput = {
   delivery?: ReportDeliveryFilter;
   selectedEntityIds?: string[];
   whatsappClassification?: WhatsappClassificationFilter;
+  /** Implatec: undefined = comportamento original (so WhatsApp). */
+  campaignKind?: CampaignKindFilter;
   page?: number;
   pageSize?: number;
   sort?: ReportSortDto;
@@ -180,6 +201,13 @@ type MetaSnapshotWhere = {
   adId?: StringFilter;
   whatsappClassification?:
     WhatsappClassification | { in: WhatsappClassification[] };
+  campaignKind?: CampaignKind;
+  OR?: Array<{
+    whatsappClassification?:
+      WhatsappClassification | { in: WhatsappClassification[] };
+    campaignKind?: CampaignKind;
+    campaignId?: StringFilter;
+  }>;
 };
 
 type ReportCurrencyContext = {
@@ -266,6 +294,8 @@ type MetaCampaignRecord = {
   status: string | null;
   effectiveStatus?: string | null;
   objective?: string | null;
+  campaignKind?: CampaignKind;
+  campaignKindSource?: string | null;
   dailyBudgetCents?: number | null;
   lifetimeBudgetCents?: number | null;
   businessId?: string | null;
@@ -424,6 +454,8 @@ type LeadEvidenceMaps = {
   campaigns: Set<string>;
   adSets: Set<string>;
   ads: Set<string>;
+  /** Campanhas com Lead vindo do formulario (source meta_leadgen). */
+  leadFormCampaigns: Set<string>;
 };
 
 type CampaignMetricOverride = {
@@ -899,6 +931,21 @@ export class MetaReportingService {
         ];
       }),
     );
+    const campaignKindById = new Map(
+      campaigns.map((campaign) => [
+        campaign.id,
+        this.campaignKindFor({
+          objective: campaign.objective ?? null,
+          whatsappClassification:
+            campaignClassificationById.get(campaign.id)?.classification ??
+            "not_whatsapp",
+          adSetDestinationTypes: adSets
+            .filter((adSet) => adSet.campaignId === campaign.id)
+            .map((adSet) => adSet.destinationType ?? null),
+          hasLeadFormEvidence: leadEvidence.leadFormCampaigns.has(campaign.id),
+        }),
+      ]),
+    );
     const syncedAt = new Date();
 
     await Promise.all([
@@ -914,6 +961,9 @@ export class MetaReportingService {
           classificationSource:
             campaignClassificationById.get(campaign.id)?.source ??
             "children:no_signal",
+          campaignKind: campaignKindById.get(campaign.id)?.kind ?? "other",
+          campaignKindSource:
+            campaignKindById.get(campaign.id)?.source ?? "no_signal",
           syncedAt,
         }),
       ),
@@ -1898,11 +1948,13 @@ export class MetaReportingService {
       input,
     );
     const usesWhatsappDefault =
+      input.campaignKind !== "lead_form" &&
       (input.whatsappClassification ?? "whatsapp") === "whatsapp";
     const needsChildNameFilter = this.needsCampaignChildNameFilter(input);
-    const whatsappAdSetWhere = usesWhatsappDefault ? campaignWhere : null;
     const childWhere =
-      whatsappAdSetWhere ?? (needsChildNameFilter ? campaignWhere : null);
+      usesWhatsappDefault || needsChildNameFilter
+        ? await this.metaChildSnapshotWhere(hierarchyScope.where, input)
+        : null;
     const [campaigns, whatsappAdSets, whatsappAds, funnelStages, deliveredIds] =
       (await Promise.all([
         this.prisma.metaCampaign.findMany({
@@ -3042,7 +3094,7 @@ export class MetaReportingService {
     const startedAt = Date.now();
     const hierarchyScope = await this.metaHierarchyScope(input);
     const hierarchyWhere = hierarchyScope.where;
-    const snapshotWhere = this.metaSnapshotWhereFromHierarchy(
+    const snapshotWhere = await this.metaChildSnapshotWhere(
       hierarchyWhere,
       input,
     );
@@ -3231,7 +3283,7 @@ export class MetaReportingService {
     const startedAt = Date.now();
     const hierarchyScope = await this.metaHierarchyScope(input);
     const hierarchyWhere = hierarchyScope.where;
-    const snapshotWhere = this.metaSnapshotWhereFromHierarchy(
+    const snapshotWhere = await this.metaChildSnapshotWhere(
       hierarchyWhere,
       input,
     );
@@ -3262,6 +3314,9 @@ export class MetaReportingService {
       ]);
     const campaignNames = new Map(
       campaigns.map((campaign) => [campaign.campaignId, campaign.name]),
+    );
+    const campaignRecordById = new Map(
+      campaigns.map((campaign) => [campaign.campaignId, campaign]),
     );
     const adSetNames = new Map(
       adSets.map((adSet) => [adSet.adSetId, adSet.name]),
@@ -3328,6 +3383,7 @@ export class MetaReportingService {
     const paginated = this.paginateReportRows(filteredAds, input, (ad) => ({
       ...this.toAdReportRow({
         ad,
+        parentCampaign: campaignRecordById.get(ad.campaignId),
         campaignName:
           campaignNames.get(ad.campaignId) ?? "Campanha nao resolvida",
         adSetName: adSetNames.get(ad.adSetId) ?? "Conjunto nao resolvido",
@@ -3920,6 +3976,8 @@ export class MetaReportingService {
     insight?: MetaCampaignInsight;
     classification: WhatsappClassification;
     classificationSource: string;
+    campaignKind: CampaignKind;
+    campaignKindSource: string;
     syncedAt: Date;
   }) {
     const data = {
@@ -3929,6 +3987,8 @@ export class MetaReportingService {
       status: input.campaign.status,
       effectiveStatus: input.campaign.effectiveStatus,
       objective: input.campaign.objective,
+      campaignKind: input.campaignKind,
+      campaignKindSource: input.campaignKindSource,
       dailyBudgetCents: input.campaign.dailyBudgetCents ?? null,
       lifetimeBudgetCents: input.campaign.lifetimeBudgetCents ?? null,
       whatsappClassification: input.classification,
@@ -4062,6 +4122,48 @@ export class MetaReportingService {
       : null;
   }
 
+  /**
+   * Implatec: tipo da campanha no painel. Formulario (Lead Ads) quando ha
+   * Lead vindo do formulario, quando o objetivo e de cadastros com destino
+   * no proprio anuncio (formulario instantaneo), ou quando o objetivo e de
+   * cadastros sem nenhum sinal de WhatsApp. WhatsApp quando a classificacao
+   * de WhatsApp aceita a campanha. Senao, outro (fica fora dos dois tipos).
+   */
+  private campaignKindFor(input: {
+    objective: string | null;
+    whatsappClassification: WhatsappClassification;
+    adSetDestinationTypes: Array<string | null>;
+    hasLeadFormEvidence: boolean;
+  }): { kind: CampaignKind; source: string } {
+    if (input.hasLeadFormEvidence) {
+      return { kind: "lead_form", source: "lead_evidence:meta_leadgen" };
+    }
+
+    const objective = (input.objective ?? "").toUpperCase();
+    const leadsObjective =
+      objective === "OUTCOME_LEADS" || objective === "LEAD_GENERATION";
+    const onAdDestination = input.adSetDestinationTypes.some((type) =>
+      LEAD_FORM_DESTINATION_TYPES.has((type ?? "").toUpperCase()),
+    );
+
+    if (leadsObjective && onAdDestination) {
+      return { kind: "lead_form", source: "objective+destination:on_ad" };
+    }
+
+    if (WHATSAPP_REPORT_CLASSIFICATIONS.includes(input.whatsappClassification)) {
+      return {
+        kind: "whatsapp",
+        source: "whatsapp:" + input.whatsappClassification,
+      };
+    }
+
+    if (leadsObjective) {
+      return { kind: "lead_form", source: "objective:leads" };
+    }
+
+    return { kind: "other", source: "no_signal" };
+  }
+
   private campaignClassificationFromChildren(
     children: Array<{ whatsappClassification: string }>,
   ): WhatsappClassification {
@@ -4148,6 +4250,8 @@ export class MetaReportingService {
       businessId: campaign.businessId,
       adAccountId: campaign.adAccountId,
       whatsappClassification: campaign.whatsappClassification,
+      // Implatec: so quando a coluna existe (snapshots antigos ficam iguais).
+      ...(campaign.campaignKind ? { campaignKind: campaign.campaignKind } : {}),
       ...metrics,
     };
   }
@@ -4188,6 +4292,9 @@ export class MetaReportingService {
       businessId: input.adSet.businessId,
       adAccountId: input.adSet.adAccountId,
       whatsappClassification: input.adSet.whatsappClassification,
+      ...(input.parentCampaign?.campaignKind
+        ? { campaignKind: input.parentCampaign.campaignKind }
+        : {}),
       ...metrics,
     };
   }
@@ -4196,6 +4303,7 @@ export class MetaReportingService {
     ad: MetaAdRecord;
     campaignName: string;
     adSetName: string;
+    parentCampaign?: MetaCampaignRecord;
     conversionLogs: ConversionEventRecord[];
     funnelStages: FunnelStageConfigurationDto[];
     leads: LeadRecord[];
@@ -4229,6 +4337,9 @@ export class MetaReportingService {
       businessId: input.ad.businessId,
       adAccountId: input.ad.adAccountId,
       whatsappClassification: input.ad.whatsappClassification,
+      ...(input.parentCampaign?.campaignKind
+        ? { campaignKind: input.parentCampaign.campaignKind }
+        : {}),
       ...metrics,
     };
   }
@@ -4603,6 +4714,8 @@ export class MetaReportingService {
     const leads = await this.prisma.lead.findMany({
       where: {
         workspaceId: input.workspaceId,
+        // Lead de formulario (Implatec) nao conta como prova de WhatsApp.
+        OR: [{ source: null }, { source: { not: LEAD_FORM_SOURCE } }],
         ...(input.campaignId ? { campaignId: input.campaignId } : {}),
         ...(input.adSetId ? { adSetId: input.adSetId } : {}),
         ...(input.adId ? { adId: input.adId } : {}),
@@ -4624,6 +4737,7 @@ export class MetaReportingService {
       campaigns: new Set(),
       adSets: new Set(),
       ads: new Set(),
+      leadFormCampaigns: new Set(),
     };
 
     if (
@@ -4651,13 +4765,24 @@ export class MetaReportingService {
         campaignId: true,
         adSetId: true,
         adId: true,
+        source: true,
       },
-    })) as LeadRecord[];
+    })) as Array<LeadRecord & { source?: string | null }>;
 
     const adSetIds = new Set(input.adSetIds);
     const adIds = new Set(input.adIds);
 
     for (const lead of leads) {
+      if (lead.source === LEAD_FORM_SOURCE) {
+        // Lead de formulario nao e prova de WhatsApp: so marca a campanha
+        // como formulario (Implatec).
+        if (lead.campaignId) {
+          evidence.leadFormCampaigns.add(lead.campaignId);
+        }
+
+        continue;
+      }
+
       if (lead.campaignId) {
         evidence.campaigns.add(lead.campaignId);
       }
@@ -5484,6 +5609,14 @@ export class MetaReportingService {
   ): MetaSnapshotWhere {
     const where: MetaSnapshotWhere = { ...hierarchyWhere };
 
+    // Implatec: so a tabela MetaCampaign tem campaignKind; para conjuntos e
+    // anuncios use metaChildSnapshotWhere.
+    if (input.campaignKind === "lead_form") {
+      where.campaignKind = "lead_form";
+
+      return where;
+    }
+
     const classification = input.whatsappClassification ?? "whatsapp";
 
     if (classification === "whatsapp") {
@@ -5501,7 +5634,61 @@ export class MetaReportingService {
       where.whatsappClassification = "manual_exclude";
     }
 
+    if (input.campaignKind === "all" && where.whatsappClassification) {
+      // Todas = as campanhas de WhatsApp do filtro de canal + as de formulario.
+      where.OR = [
+        { whatsappClassification: where.whatsappClassification },
+        { campaignKind: "lead_form" },
+      ];
+      delete where.whatsappClassification;
+    }
+
     return where;
+  }
+
+  /**
+   * Implatec: o mesmo recorte para MetaAdSet/MetaAd, que nao tem a coluna
+   * campaignKind: o tipo vira uma lista de campanhas.
+   */
+  private async metaChildSnapshotWhere(
+    hierarchyWhere: Omit<MetaSnapshotWhere, "whatsappClassification">,
+    input: ReportFilterInput,
+  ): Promise<MetaSnapshotWhere> {
+    const kind = input.campaignKind;
+    const withoutKind = { ...input, campaignKind: undefined };
+
+    if (!kind || kind === "whatsapp") {
+      return this.metaSnapshotWhereFromHierarchy(hierarchyWhere, withoutKind);
+    }
+
+    const leadFormCampaignIds = (
+      (await this.prisma.metaCampaign.findMany({
+        where: { ...hierarchyWhere, campaignKind: "lead_form" },
+        select: { campaignId: true },
+      })) as Array<{ campaignId: string }>
+    ).map((campaign) => campaign.campaignId);
+
+    if (kind === "lead_form") {
+      return { ...hierarchyWhere, campaignId: { in: leadFormCampaignIds } };
+    }
+
+    const base = this.metaSnapshotWhereFromHierarchy(
+      hierarchyWhere,
+      withoutKind,
+    );
+    const { whatsappClassification, ...rest } = base;
+
+    if (!whatsappClassification) {
+      return rest;
+    }
+
+    return {
+      ...rest,
+      OR: [
+        { whatsappClassification },
+        { campaignId: { in: leadFormCampaignIds } },
+      ],
+    };
   }
 
   private async metaHierarchyWhere(

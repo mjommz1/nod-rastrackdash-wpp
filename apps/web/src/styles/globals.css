@@ -16097,3 +16097,89 @@ button.meta-manual-entry[aria-expanded="true"] {
     grid-column: 1 / -1;
   }
 }
+
+/* Implatec: tipo de campanha (WhatsApp x Formulario) */
+.campaign-kind-tag {
+  margin-left: 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.campaign-kind-lead_form {
+  border-color: rgba(188, 176, 200, 0.6);
+}
+
+.overview-campaign-kind-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+  margin-top: 16px;
+}
+
+.overview-campaign-kind {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+}
+
+.overview-campaign-kind header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.overview-campaign-kind header p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 13px;
+}
+
+.overview-campaign-kind-lead_form {
+  border-color: rgba(188, 176, 200, 0.45);
+}
+
+.overview-campaign-kind-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.overview-campaign-kind-funnel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.overview-campaign-kind-funnel li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.overview-campaign-kind-funnel li span {
+  font-size: 12px;
+}
+
+.overview-campaign-kind-funnel li strong {
+  font-size: 20px;
+}
+
+.overview-campaign-kind-funnel li small {
+  font-size: 12px;
+}
+
+.overview-campaign-kind-empty {
+  margin: 0;
+  font-size: 14px;
+}

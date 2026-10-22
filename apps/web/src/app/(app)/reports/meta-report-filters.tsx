@@ -34,6 +34,8 @@ type MetaReportFiltersProps = {
   until?: string;
   view?: "campaigns" | "adsets" | "ads";
   whatsappClassification?: string;
+  /** Implatec: tipo de campanha. */
+  campaignKind?: string;
 };
 
 const nameScopeOptions = [
@@ -51,6 +53,13 @@ const statusOptions = [
 const deliveryOptions = [
   ["all", "Com ou sem veiculacao"],
   ["had_delivery", "Teve veiculacao no periodo"],
+] as const;
+
+/** Implatec: tipo de campanha (WhatsApp x formulario Lead Ads). */
+const campaignKindOptions = [
+  ["all", "WhatsApp + Formulario"],
+  ["whatsapp", "So WhatsApp"],
+  ["lead_form", "So Formulario (Lead Ads)"],
 ] as const;
 
 const classificationOptions = [
@@ -112,6 +121,7 @@ export function MetaReportFilters({
   until,
   view = "campaigns",
   whatsappClassification = "whatsapp",
+  campaignKind = "all",
 }: MetaReportFiltersProps) {
   const reportingAccounts = useMemo(
     () => (assets?.reportingAccounts ?? []).filter((account) => account.active),
@@ -337,6 +347,21 @@ export function MetaReportFilters({
                 aria-label="Filtrar por veiculacao no periodo"
               >
                 {deliveryOptions.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="filter-field">
+              <span>Tipo de campanha</span>
+              <select
+                className="filter-control"
+                name="campaignKind"
+                defaultValue={campaignKind}
+                aria-label="Filtrar por tipo de campanha"
+              >
+                {campaignKindOptions.map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>

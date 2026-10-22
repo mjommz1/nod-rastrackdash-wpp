@@ -47,6 +47,8 @@ type ReportPagination = {
 
 type WhatsappClassificationFilter =
   "whatsapp" | "needs_review" | "excluded" | "all";
+/** Implatec: tipo da campanha (WhatsApp x formulario Lead Ads). */
+type CampaignKindFilter = "all" | "whatsapp" | "lead_form";
 type ReportNameScope = "campaign" | "adset" | "ad";
 type ReportStatusFilter = "all" | "active" | "paused";
 type ReportDeliveryFilter = "all" | "had_delivery";
@@ -64,6 +66,7 @@ type ReportFilters = {
   delivery?: ReportDeliveryFilter;
   selectedEntityIds?: string[];
   whatsappClassification?: WhatsappClassificationFilter;
+  campaignKind?: CampaignKindFilter;
 };
 
 @Controller("reports")
@@ -106,6 +109,8 @@ export class ReportingController {
     @Query("sort") sort?: unknown,
     @Query("dir") dir?: unknown,
     @Query("adAccountIds") adAccountIds?: string | string[],
+    // Implatec: por ultimo para nao deslocar os parametros posicionais.
+    @Query("campaignKind") campaignKind?: string | string[],
   ) {
     const workspace = await this.getCurrentWorkspace(refreshToken);
 
@@ -128,6 +133,7 @@ export class ReportingController {
       delivery,
       selectedIds,
       whatsappClassification,
+      campaignKind,
     });
     const pagination = this.parseReportPagination(page, pageSize);
     const reportSort = this.parseReportSort(sort, dir);
@@ -163,6 +169,8 @@ export class ReportingController {
     @Query("selectedIds") selectedIds?: string | string[],
     @Query("whatsappClassification") whatsappClassification?: string | string[],
     @Query("adAccountIds") adAccountIds?: string | string[],
+    // Implatec: por ultimo para nao deslocar os parametros posicionais.
+    @Query("campaignKind") campaignKind?: string | string[],
   ) {
     const workspaceId = await this.getCurrentWorkspaceId(refreshToken);
     const period = this.parseReportPeriod(since, until);
@@ -179,6 +187,7 @@ export class ReportingController {
       delivery,
       selectedIds,
       whatsappClassification,
+      campaignKind,
     });
     const csv = await this.metaReportingService.getCampaignReportCsv({
       workspaceId,
@@ -216,6 +225,8 @@ export class ReportingController {
     @Query("sort") sort?: unknown,
     @Query("dir") dir?: unknown,
     @Query("adAccountIds") adAccountIds?: string | string[],
+    // Implatec: por ultimo para nao deslocar os parametros posicionais.
+    @Query("campaignKind") campaignKind?: string | string[],
   ) {
     const workspaceId = await this.getCurrentWorkspaceId(refreshToken);
     const period = this.parseReportPeriod(since, until);
@@ -232,6 +243,7 @@ export class ReportingController {
       delivery,
       selectedIds,
       whatsappClassification,
+      campaignKind,
     });
     const pagination = this.parseReportPagination(page, pageSize);
     const reportSort = this.parseReportSort(sort, dir);
@@ -266,6 +278,8 @@ export class ReportingController {
     @Query("sort") sort?: unknown,
     @Query("dir") dir?: unknown,
     @Query("adAccountIds") adAccountIds?: string | string[],
+    // Implatec: por ultimo para nao deslocar os parametros posicionais.
+    @Query("campaignKind") campaignKind?: string | string[],
   ) {
     const workspaceId = await this.getCurrentWorkspaceId(refreshToken);
     const period = this.parseReportPeriod(since, until);
@@ -282,6 +296,7 @@ export class ReportingController {
       delivery,
       selectedIds,
       whatsappClassification,
+      campaignKind,
     });
     const pagination = this.parseReportPagination(page, pageSize);
     const reportSort = this.parseReportSort(sort, dir);
@@ -765,6 +780,7 @@ export class ReportingController {
     delivery?: string | string[];
     selectedIds?: string | string[];
     whatsappClassification?: string | string[];
+    campaignKind?: string | string[];
   }): ReportFilters {
     const filters: ReportFilters = {};
     const businessId = this.trimOptional(input.businessId);
@@ -781,6 +797,7 @@ export class ReportingController {
     const whatsappClassification = this.parseWhatsappClassificationFilter(
       input.whatsappClassification,
     );
+    const campaignKind = this.parseCampaignKindFilter(input.campaignKind);
 
     if (businessId) {
       filters.businessId = businessId;
@@ -825,6 +842,10 @@ export class ReportingController {
 
     if (whatsappClassification) {
       filters.whatsappClassification = whatsappClassification;
+    }
+
+    if (campaignKind) {
+      filters.campaignKind = campaignKind;
     }
 
     return filters;
@@ -981,6 +1002,26 @@ export class ReportingController {
     }
 
     throw new BadRequestException("Filtro de classificacao invalido");
+  }
+
+  private parseCampaignKindFilter(
+    value?: string | string[],
+  ): CampaignKindFilter | undefined {
+    if (Array.isArray(value)) {
+      throw new BadRequestException("Filtro de tipo de campanha invalido");
+    }
+
+    const trimmed = value?.trim();
+
+    if (!trimmed) {
+      return undefined;
+    }
+
+    if (["all", "whatsapp", "lead_form"].includes(trimmed)) {
+      return trimmed as CampaignKindFilter;
+    }
+
+    throw new BadRequestException("Filtro de tipo de campanha invalido");
   }
 
   private isDateOnly(value?: string): value is string {

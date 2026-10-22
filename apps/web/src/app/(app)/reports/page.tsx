@@ -200,6 +200,8 @@ type ReportFilters = {
   status?: string;
   until?: string;
   whatsappClassification?: string;
+  /** Implatec: tipo de campanha (all | whatsapp | lead_form). */
+  campaignKind?: string;
 };
 type ReportSortColumn = {
   cost: ReportSortAction;
@@ -575,6 +577,10 @@ function reportQuery(
     params.set("whatsappClassification", filters.whatsappClassification);
   }
 
+  if (filters.campaignKind) {
+    params.set("campaignKind", filters.campaignKind);
+  }
+
   if (includePagination && filters.page) {
     params.set("page", String(filters.page));
   }
@@ -613,6 +619,7 @@ async function syncMetaReports(formData: FormData) {
     "delivery",
     "selectedIds",
     "whatsappClassification",
+    "campaignKind",
     "view",
     "metrics",
     "mode",
@@ -910,6 +917,34 @@ function reportsNotice(notice?: string): ReportNotice | null {
   };
 
   return notice ? (notices[notice] ?? null) : null;
+}
+
+/** Implatec: valor do filtro de tipo de campanha; "all" quando nao informado. */
+function campaignKindFilter(value?: string): "all" | "whatsapp" | "lead_form" {
+  return value === "whatsapp" || value === "lead_form" ? value : "all";
+}
+
+const campaignKindLabels: Record<string, string> = {
+  whatsapp: "WhatsApp",
+  lead_form: "Formulario",
+};
+
+/** Implatec: etiqueta do tipo da campanha ao lado do nome. */
+function CampaignKindTag({ kind }: { kind?: string | null }) {
+  const label = kind ? campaignKindLabels[kind] : undefined;
+
+  if (!label) {
+    return null;
+  }
+
+  return (
+    <span
+      className={`tag campaign-kind-tag campaign-kind-${kind}`}
+      title="Tipo da campanha (Implatec)"
+    >
+      {label}
+    </span>
+  );
 }
 
 function leadsHref(filters: {
@@ -2422,6 +2457,10 @@ export default async function ReportsPage({
   const whatsappClassification = asStringParam(
     resolvedSearchParams.whatsappClassification,
   );
+  // Implatec: por padrao o relatorio mostra WhatsApp + formulario.
+  const campaignKind = campaignKindFilter(
+    asStringParam(resolvedSearchParams.campaignKind),
+  );
   const notice = asStringParam(resolvedSearchParams.notice);
   const diagnosticRequested =
     asStringParam(resolvedSearchParams.diagnostic) === "open";
@@ -2445,6 +2484,7 @@ export default async function ReportsPage({
     selectedIds,
     sort,
     whatsappClassification,
+    campaignKind,
     metrics: activeMetricGroup,
     mode: activeMode,
     objective: insightObjective,
@@ -2800,6 +2840,7 @@ export default async function ReportsPage({
               name="whatsappClassification"
               value={whatsappClassification ?? ""}
             />
+            <input type="hidden" name="campaignKind" value={campaignKind} />
             <input
               type="hidden"
               name="compareSince"
@@ -2913,6 +2954,11 @@ export default async function ReportsPage({
                     name="whatsappClassification"
                     value={whatsappClassification ?? ""}
                   />
+                  <input
+                    type="hidden"
+                    name="campaignKind"
+                    value={campaignKind}
+                  />
                   <ReportSortHiddenInputs sort={sort} />
                   <ReportModeHiddenInputs
                     mode={activeMode}
@@ -2993,6 +3039,7 @@ export default async function ReportsPage({
             selectedIds={selectedIds}
             status={status}
             whatsappClassification={whatsappClassification}
+            campaignKind={campaignKind}
             since={since}
             until={until}
             compareSince={compareSince}
@@ -3230,6 +3277,7 @@ export default async function ReportsPage({
                               {row.name}
                             </PresentationMask>
                           </Link>
+                          <CampaignKindTag kind={row.campaignKind} />
                         </strong>
                       </div>
                       <MetaEntityControls
@@ -3380,6 +3428,7 @@ export default async function ReportsPage({
                               {row.name}
                             </PresentationMask>
                           </Link>
+                          <CampaignKindTag kind={row.campaignKind} />
                         </strong>
                       </div>
                       <span>
@@ -3542,6 +3591,7 @@ export default async function ReportsPage({
                                 {row.name}
                               </PresentationMask>
                             </Link>
+                            <CampaignKindTag kind={row.campaignKind} />
                           </strong>
                           <span>
                             <PresentationMask placeholder="Campanha oculta / Conjunto oculto">
@@ -3752,6 +3802,7 @@ export default async function ReportsPage({
               name="whatsappClassification"
               value={whatsappClassification ?? ""}
             />
+            <input type="hidden" name="campaignKind" value={campaignKind} />
             <ReportSortHiddenInputs sort={sort} />
             <ReportModeHiddenInputs
               mode={activeMode}

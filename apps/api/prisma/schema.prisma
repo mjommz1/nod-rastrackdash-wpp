@@ -266,6 +266,13 @@ enum MetaBusinessConnectionStatus {
   paused
 }
 
+// Implatec: tipo da campanha no painel (WhatsApp x formulario Lead Ads).
+enum MetaCampaignKind {
+  whatsapp
+  lead_form
+  other
+}
+
 enum MetaWhatsappClassification {
   auto_whatsapp
   creative_whatsapp
@@ -2188,6 +2195,8 @@ model MetaCampaign {
   whatsappClassification   MetaWhatsappClassification  @default(not_whatsapp)
   classificationSource     String?
   classificationOverride   MetaWhatsappClassification?
+  campaignKind             MetaCampaignKind            @default(other)
+  campaignKindSource       String?
   spendCents               Int                         @default(0)
   impressions              Int                         @default(0)
   clicks                   Int                         @default(0)
@@ -2199,6 +2208,7 @@ model MetaCampaign {
   workspace Workspace @relation(fields: [workspaceId], references: [id])
 
   @@unique([workspaceId, campaignId])
+  @@index([workspaceId, campaignKind])
   @@index([workspaceId, adAccountId])
   @@index([workspaceId, status])
   @@index([workspaceId, businessId, adAccountId, whatsappClassification])

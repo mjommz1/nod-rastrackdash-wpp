@@ -14,6 +14,7 @@ const exportQueryParams = [
   "delivery",
   "selectedIds",
   "whatsappClassification",
+  "campaignKind",
 ] as const;
 
 export async function GET(request: Request) {
