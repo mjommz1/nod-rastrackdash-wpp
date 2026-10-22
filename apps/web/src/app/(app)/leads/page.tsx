@@ -1,4 +1,9 @@
-import type { LeadListItemDto, LeadListPageDto } from "@wpptrack/shared";
+import {
+  leadLifecycleLabel,
+  leadSourceLabel,
+  type LeadListItemDto,
+  type LeadListPageDto,
+} from "@wpptrack/shared";
 import {
   ArrowUpRight,
   CalendarDays,
@@ -12,12 +17,15 @@ import Link from "next/link";
 import { PresentationMask } from "../../../components/presentation-mask";
 import { formatDateTime } from "../../../lib/date-time";
 import { serverApiFetch } from "../../../lib/server-api";
+import { LeadExportMenu } from "./lead-export-menu";
+import { leadFiltersHref, type LeadFilterValues } from "./lead-filter-params";
 
 type LeadsSearchParams = Record<string, string | string[] | undefined>;
 
 type LeadsResult = {
   leads: LeadListItemDto[];
   pagination: LeadListPageDto["pagination"];
+  attributionCounts: LeadListPageDto["attributionCounts"];
   state: "real" | "empty" | "error";
 };
 
@@ -32,6 +40,7 @@ type LeadFilters = {
   attribution?: string;
   since?: string;
   until?: string;
+  base?: string;
   page: number;
   pageSize: number;
 };
@@ -46,6 +55,7 @@ async function getLeads(filters: LeadFilters): Promise<LeadsResult> {
     return {
       leads: response.items,
       pagination: response.pagination,
+      attributionCounts: response.attributionCounts,
       state: response.items.length > 0 ? "real" : "empty",
     };
   } catch {
@@ -57,6 +67,7 @@ async function getLeads(filters: LeadFilters): Promise<LeadsResult> {
         totalItems: 0,
         totalPages: 0,
       },
+      attributionCounts: undefined,
       state: "error",
     };
   }
@@ -76,6 +87,7 @@ function leadQuery(filters: LeadFilters, page = filters.page): string {
     attribution: filters.attribution,
     since: filters.since,
     until: filters.until,
+    base: filters.base,
   })) {
     if (value) {
       params.set(key, value);
@@ -100,33 +112,8 @@ function asStringParam(
   return Array.isArray(value) ? value[0] : value;
 }
 
-function statusLabel(status: LeadListItemDto["status"]): string {
-  const labels: Record<LeadListItemDto["status"], string> = {
-    new: "Novo",
-    active: "Atendimento ativo",
-    qualified: "Lead qualificado",
-    converted: "Compra atribuida",
-    lost: "Perdido",
-  };
-
-  return labels[status];
-}
-
-function lifecycleLabel(lead: LeadListItemDto): string {
-  if (lead.status === "lost") {
-    return "Perdido";
-  }
-
-  const labels: Record<string, string> = {
-    LeadSubmitted: "Conversa iniciada",
-    QualifiedLead: "Lead qualificado",
-    Purchase: "Compra atribuida",
-  };
-
-  return lead.lastEventName
-    ? (labels[lead.lastEventName] ?? lead.lastEventName)
-    : statusLabel(lead.status);
-}
+// Same labels as the exported spreadsheet (shared with the API).
+const lifecycleLabel = leadLifecycleLabel;
 
 function lifecycleTone(lead: LeadListItemDto): string {
   if (lead.status === "lost") {
@@ -149,20 +136,41 @@ function lastTouchLabel(value: string | null): string {
   });
 }
 
-function sourceLabel(source: string | null, adId: string | null): string {
-  if (source === "external_mysql") {
-    return "Integracao externa";
+const sourceLabel = leadSourceLabel;
+
+/** Header badge: says which people the number counts. */
+function leadCountBadge(
+  count: number,
+  base: string | undefined,
+  hasPeriod: boolean,
+): string {
+  if (base === "returning") {
+    return count === 1
+      ? "1 lead que voltou no período"
+      : `${count} leads que voltaram no período`;
   }
 
-  if (source === "umbler_talk") {
-    return "Umbler Talk";
+  if (base === "repeat") {
+    return count === 1
+      ? "1 lead com mais de uma conversa no período"
+      : `${count} leads com mais de uma conversa no período`;
   }
 
-  if (source === "uazapi") {
-    return "NOD API";
+  if (!hasPeriod) {
+    return count === 1 ? "1 lead" : `${count} leads`;
   }
 
-  return source ?? adId ?? "Origem parcial";
+  return count === 1
+    ? "1 lead novo (1º contato no período)"
+    : `${count} leads novos (1º contato no período)`;
+}
+
+function attributionChipLabel(attribution: string | undefined): string {
+  return attribution === "paid"
+    ? "Origem: anúncio"
+    : attribution === "organic"
+      ? "Origem: orgânico"
+      : "Origem: todas";
 }
 
 function LeadIdentity({ lead }: { lead: LeadListItemDto }) {
@@ -206,6 +214,13 @@ export default async function LeadsPage({
   const adSetId = asStringParam(resolvedSearchParams.adSetId);
   const adId = asStringParam(resolvedSearchParams.adId);
   const attribution = asStringParam(resolvedSearchParams.attribution);
+  // Only "returning"/"repeat" change the list; anything else is the default
+  // (novos).
+  const requestedBase = asStringParam(resolvedSearchParams.base);
+  const base =
+    requestedBase === "returning" || requestedBase === "repeat"
+      ? requestedBase
+      : undefined;
   const since = asStringParam(resolvedSearchParams.since);
   const until = asStringParam(resolvedSearchParams.until);
   const page = positiveIntegerParam(
@@ -222,7 +237,7 @@ export default async function LeadsPage({
     attribution || label || since || until || campaignId || adSetId || adId,
   );
   const hasAnyFilter = Boolean(
-    search || status || eventName || hasAdvancedFilters,
+    search || status || eventName || base || hasAdvancedFilters,
   );
   const advancedFilterCount = [
     attribution,
@@ -244,8 +259,23 @@ export default async function LeadsPage({
     attribution,
     since,
     until,
+    base,
     page,
     pageSize,
+  };
+  const appliedFilters: LeadFilterValues = {
+    search: search ?? "",
+    status: status ?? "",
+    eventName: eventName ?? "",
+    label: label ?? "",
+    campaignId: campaignId ?? "",
+    adSetId: adSetId ?? "",
+    adId: adId ?? "",
+    attribution: attribution ?? "",
+    since: since ?? "",
+    until: until ?? "",
+    base: base ?? "",
+    pageSize: String(pageSize),
   };
   const result = await getLeads(leadFilters);
   const { leads } = result;
@@ -265,7 +295,22 @@ export default async function LeadsPage({
   const emptyDescription =
     result.state === "error"
       ? "Confira a API antes de analisar conversas."
-      : "Quando uma integracao ativa receber conversas, elas aparecem aqui.";
+      : base === "returning" && !since
+        ? "Escolha a data de início do período para ver quem voltou por anúncio."
+        : base === "returning"
+          ? "Ninguém que já tinha falado com você voltou por anúncio neste período."
+          : base === "repeat" && !since && !until
+            ? "Escolha o período para ver quem conversou mais de uma vez por anúncio."
+            : base === "repeat"
+              ? "Ninguém iniciou mais de uma conversa por anúncio neste período."
+              : "Quando uma integracao ativa receber conversas, elas aparecem aqui.";
+  const attributionCounts = result.attributionCounts;
+  // Organic leads get their own count so the paid one matches the overview.
+  const showAttributionSplit =
+    !attribution &&
+    result.state !== "error" &&
+    attributionCounts !== undefined &&
+    attributionCounts.organic > 0;
 
   return (
     <section className="page-stack page-wide leads-page">
@@ -283,8 +328,38 @@ export default async function LeadsPage({
             <span className="status-chip warn">API indisponivel</span>
           ) : null}
           <span className="status-chip">
-            {result.pagination.totalItems} conversas reais
+            {leadCountBadge(
+              result.pagination.totalItems,
+              base,
+              hasPeriodFilter,
+            )}
           </span>
+          <span className="status-chip">
+            {attributionChipLabel(attribution)}
+          </span>
+          {showAttributionSplit ? (
+            <>
+              <Link
+                className="status-chip"
+                href={leadFiltersHref({
+                  ...appliedFilters,
+                  attribution: "paid",
+                })}
+              >
+                {attributionCounts.paid} de anúncio
+              </Link>
+              <Link
+                className="status-chip"
+                href={leadFiltersHref({
+                  ...appliedFilters,
+                  attribution: "organic",
+                })}
+              >
+                {attributionCounts.organic}{" "}
+                {attributionCounts.organic === 1 ? "orgânico" : "orgânicos"}
+              </Link>
+            </>
+          ) : null}
         </div>
       </header>
 
@@ -305,6 +380,17 @@ export default async function LeadsPage({
               data-presentation-sensitive-field="true"
             />
           </label>
+          <select
+            className="filter-control"
+            name="base"
+            aria-label="Base de leads"
+            title="Leads novos: primeiro contato no período. Voltaram: já falaram antes e iniciaram uma nova conversa por anúncio no período. 2+ conversas: iniciaram 2 ou mais conversas por anúncio no período, novos ou não."
+            defaultValue={base ?? ""}
+          >
+            <option value="">Leads novos</option>
+            <option value="returning">Voltaram</option>
+            <option value="repeat">2+ conversas</option>
+          </select>
           <select
             className="filter-control"
             name="status"
@@ -363,8 +449,8 @@ export default async function LeadsPage({
                 defaultValue={attribution ?? ""}
               >
                 <option value="">Toda origem</option>
-                <option value="paid">Com atribuicao</option>
-                <option value="organic">Sem atribuicao</option>
+                <option value="paid">Anúncio</option>
+                <option value="organic">Orgânico (sem anúncio)</option>
               </select>
             </label>
             <label className="filter-field">
@@ -411,18 +497,22 @@ export default async function LeadsPage({
         <input type="hidden" name="adId" value={adId ?? ""} />
       </form>
 
-      {hasReportFilter || hasPeriodFilter ? (
+      {hasReportFilter || hasPeriodFilter || base ? (
         <div className="lead-filter-context" role="status">
           <Filter aria-hidden="true" size={16} strokeWidth={2} />
           <strong>Recorte ativo</strong>
           <span>
-            {attribution === "organic"
-              ? "Exibindo conversas sem atribuicao"
-              : attribution === "paid"
-                ? "Exibindo conversas com atribuicao"
-                : hasReportFilter
-                  ? "Filtro do relatorio aplicado"
-                  : "Periodo das conversas"}
+            {base === "returning"
+              ? "Leads que já tinham falado com você e voltaram por anúncio"
+              : base === "repeat"
+                ? "Leads que iniciaram mais de uma conversa por anúncio"
+                : attribution === "organic"
+                  ? "Leads novos sem anúncio (orgânicos)"
+                  : attribution === "paid"
+                    ? "Leads novos vindos de anúncio"
+                    : hasReportFilter
+                      ? "Filtro do relatorio aplicado"
+                      : "Leads novos (1º contato no período)"}
             {since || until
               ? `: ${since ?? "inicio"} ate ${until ?? "hoje"}`
               : "."}
@@ -442,14 +532,19 @@ export default async function LeadsPage({
             </p>
           </div>
           {leads.length > 0 ? (
-            <div className="lead-results-summary">
-              <span className="status-chip">
-                Pagina {result.pagination.page} de{" "}
-                {Math.max(result.pagination.totalPages, 1)}
-              </span>
-              <span className={`status-chip${pendingCount > 0 ? " warn" : ""}`}>
-                {pendingCount} sem etapa nesta pagina
-              </span>
+            <div className="lead-results-actions">
+              <div className="lead-results-summary">
+                <span className="status-chip">
+                  Pagina {result.pagination.page} de{" "}
+                  {Math.max(result.pagination.totalPages, 1)}
+                </span>
+                <span
+                  className={`status-chip${pendingCount > 0 ? " warn" : ""}`}
+                >
+                  {pendingCount} sem etapa nesta pagina
+                </span>
+              </div>
+              <LeadExportMenu applied={appliedFilters} />
             </div>
           ) : null}
         </header>

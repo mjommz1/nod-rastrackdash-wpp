@@ -1,4 +1,19 @@
 import {
+  assertMetaCloudSigningConfigured,
+  effectiveInboundParserStatus,
+  inboundParserProductionEligible,
+  missingMetaSigningSecretMessage,
+} from "../inbound-webhooks/inbound-webhook-parser-eligibility";
+import {
+  requireStudentReplayOwner,
+  replayContextHash,
+  studentReplayContext,
+  studentBatchAuthorizationValid,
+  studentReplayEventHash,
+  studentReplayDispatchUnsettled,
+  type StudentReplayActor,
+} from "./student-replay-context";
+import {
   BadRequestException,
   ConflictException,
   Inject,
@@ -6,22 +21,17 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from "@nestjs/common";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import type {
   BackofficeInboundWebhookReplayBatchDto,
   BackofficeInboundWebhookReplayPreviewDto,
   InboundWebhookParserReleaseDto,
   InboundWebhookReplaySelectionDto,
+  StudentInboundReplayAuthorizeDto,
+  StudentInboundReplayPreviewDto,
+  StudentInboundReplayResultDto,
 } from "@wpptrack/shared";
-// rastrackdash sanitize (rewrite_rules.platform-admin-user-local-type):
-// auth/platform-admin.service.ts is stripped (multi-client staff model);
-// this file only ever imported the PlatformAdminUser TYPE to type an
-// `actor` parameter, never PlatformAdminService itself. Local structural
-// type keeps certifyParserRelease/authorizeReplay/retryTransientFailures
-// intact for a future single-owner bootstrap caller (F3.3/F6 TODO)
-// instead of deleting real per-workspace business logic.
-type PlatformAdminUser = { id: string; role: string };
 import {
   hashPhoneIdentity,
   normalizePhoneIdentity,
@@ -33,10 +43,13 @@ import { RUNTIME_ENV, type RuntimeEnv } from "../common/runtime/runtime.module";
 import { parseInboundWebhooksConfig } from "../config/deployment-config";
 import { ConversionEventsService } from "../conversion-events/conversion-events.service";
 import { InboundWebhookPayloadEncryptionService } from "../inbound-webhooks/inbound-webhook-payload-encryption.service";
+import { inboundMetaRouteMatches } from "../inbound-webhooks/inbound-webhook-meta-route-eligibility";
+import { InboundWebhookMetaRouteReaderService } from "../inbound-webhooks/inbound-webhook-meta-route-reader.service";
 import { inboundWebhookParserContext } from "../inbound-webhooks/providers/inbound-webhook-parser";
 import type { ParsedInboundWebhookEvent } from "../inbound-webhooks/providers/inbound-webhook-parser";
 import { InboundWebhookParserRegistry } from "../inbound-webhooks/providers/inbound-webhook-parser.registry";
 import { LeadsService } from "../leads/leads.service";
+import { LicenseClientService } from "../licensing-client/license-client.service";
 import { InboundWebhookReplayQueueService } from "./inbound-webhook-replay-queue.service";
 
 const REPLAY_BATCH_LIMIT = 500;
@@ -71,6 +84,7 @@ const replayItemInclude = {
       },
       channel: {
         include: {
+          whatsappInstance: true,
           routes: {
             where: {
               active: true,
@@ -93,6 +107,20 @@ const replayItemInclude = {
 type ReplayItemRecord = Prisma.InboundWebhookReplayItemGetPayload<{
   include: typeof replayItemInclude;
 }>;
+
+type StudentReplayProof = {
+  expires: number;
+  context: string;
+  eventHashes: Record<string, string>;
+  previewDigest: string;
+};
+type StudentPreviewTicket = StudentReplayProof & {
+  actorId: string;
+  workspaceId: string;
+  connectionId: string;
+  channelId: string;
+  expires: number;
+};
 
 class ReplayItemFailure extends Error {
   constructor(readonly code: string) {
@@ -120,91 +148,489 @@ export class InboundWebhookReplayService {
     private readonly replayQueue: InboundWebhookReplayQueueService,
     @Inject(RUNTIME_ENV)
     private readonly env: RuntimeEnv = process.env,
+    @Inject(LicenseClientService)
+    private readonly licenseClient?: LicenseClientService,
   ) {}
 
-  async certifyParserRelease(
-    releaseId: string,
-    actor: PlatformAdminUser,
-    sourceIp: string | null,
-  ): Promise<InboundWebhookParserReleaseDto> {
-    const release = await this.prisma.inboundWebhookParserRelease.findUnique({
-      where: { id: releaseId },
+  async previewStudentReplay(
+    actor: StudentReplayActor,
+    connectionId: string,
+    channelId: string,
+  ): Promise<StudentInboundReplayPreviewDto> {
+    await requireStudentReplayOwner(this.prisma, actor);
+    const connection = await this.loadConnection(
+      connectionId,
+      actor.workspaceId,
+    );
+    const channel = await this.prisma.inboundWebhookChannel.findFirst({
+      where: { id: channelId, workspaceId: actor.workspaceId, connectionId },
     });
-
-    if (!release) {
-      throw new NotFoundException("Parser nao encontrado");
-    }
-
-    if (release.status === "retired") {
-      throw new ConflictException("Parser retirado nao pode ser certificado");
-    }
-
-    if (release.status !== "certified") {
-      const evidence = await this.prisma.inboundWebhookDelivery.count({
-        where: {
-          provider: release.provider,
-          parserVersion: release.version,
-          status: "processed",
-          connection: {
-            parserReleaseId: release.id,
-            removedAt: null,
-          },
-          events: {
-            some: {
-              hasCtwa: true,
-            },
-          },
-        },
-      });
-
-      if (evidence === 0) {
-        throw new BadRequestException(
-          "O parser precisa de um payload CTWA real processado antes da certificacao",
-        );
-      }
-    }
-
-    const certifiedAt = release.certifiedAt ?? new Date();
-    const certified =
-      release.status === "certified"
-        ? release
-        : await this.prisma.$transaction(async (tx) => {
-            const updated = await tx.inboundWebhookParserRelease.update({
-              where: { id: release.id },
-              data: {
-                status: "certified",
-                certifiedByUserId: actor.id,
-                certifiedAt,
-              },
-            });
-
-            await tx.auditLog.create({
-              data: {
-                workspaceId: null,
-                actorUserId: actor.id,
-                actorType: actor.role,
-                action: "inbound_webhook.parser.certify",
-                targetType: "inbound_webhook_parser_release",
-                targetId: release.id,
-                sourceIp: this.sourceIp(sourceIp),
-                resultStatus: "success",
-                beforeSummary: {
-                  provider: release.provider,
-                  version: release.version,
-                  status: release.status,
-                },
-                afterSummary: {
-                  provider: release.provider,
-                  version: release.version,
-                  status: "certified",
-                },
-              },
-            });
-
-            return updated;
+    if (
+      !channel ||
+      channel.workspaceId !== actor.workspaceId ||
+      channel.connectionId !== connectionId
+    )
+      throw new NotFoundException("Canal nao encontrado nesta conexao");
+    const context = await studentReplayContext(
+      this.prisma,
+      actor.workspaceId,
+      connectionId,
+      channelId,
+    );
+    const active = await studentReplayDispatchUnsettled(
+      this.prisma,
+      actor.workspaceId,
+      connectionId,
+    );
+    const latest = await this.prisma.inboundWebhookReplayBatch.findFirst({
+      where: { workspaceId: actor.workspaceId, connectionId, channelId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { id: true },
+    });
+    const unavailableReason = !this.replayEnabled()
+      ? "Recuperacao indisponivel. O operador precisa habilitar INBOUND_WEBHOOKS_ENABLED e INBOUND_WEBHOOK_REPLAY_ENABLED na API e reiniciar o servico."
+      : !this.env.META_APP_SECRET?.trim()
+        ? missingMetaSigningSecretMessage
+        : !context
+          ? "Habilite o canal, valide a rota Meta e use a integracao Meta Cloud nativa v1 disponivel antes de recuperar."
+          : active
+            ? "Esta conexao ja possui uma recuperacao em andamento. Aguarde e atualize o resultado."
+            : null;
+    const { events, scanned } = await this.studentCandidates(
+      actor,
+      connectionId,
+      channelId,
+    );
+    const expires = Date.now() + 10 * 60_000;
+    const eventHashes = Object.fromEntries(
+      events
+        .slice(0, REPLAY_BATCH_LIMIT)
+        .map((event) => [event.id, studentReplayEventHash(event)]),
+    );
+    const previewToken =
+      unavailableReason || !context || !events.length
+        ? null
+        : this.signStudentPreview({
+            actorId: actor.id,
+            workspaceId: actor.workspaceId,
+            connectionId,
+            channelId,
+            expires,
+            context,
+            eventHashes,
+            previewDigest: "",
           });
+    await this.prisma.auditLog.create({
+      data: {
+        workspaceId: actor.workspaceId,
+        actorUserId: actor.id,
+        actorType: "owner",
+        action: "inbound_webhook.replay.preview",
+        targetType: "InboundWebhookChannel",
+        targetId: channelId,
+        resultStatus: unavailableReason ? "unavailable" : "previewed",
+        afterSummary: {
+          connectionId,
+          channelId,
+          eligible: events.length,
+          scanned,
+        },
+      },
+    });
+    return {
+      connectionId,
+      channelId,
+      eligible: events.length,
+      scanned,
+      scanLimit: REPLAY_CANDIDATE_SCAN_LIMIT,
+      batchLimit: 500,
+      previewToken,
+      expiresAt: previewToken ? new Date(expires).toISOString() : null,
+      unavailableReason,
+      canSendRemaining: Boolean(
+        context &&
+        !unavailableReason &&
+        (await this.studentCanarySucceeded(
+          this.prisma,
+          actor,
+          connectionId,
+          channelId,
+          context,
+        )),
+      ),
+      latestBatch: latest
+        ? await this.getStudentReplayResult(
+            actor,
+            connectionId,
+            channelId,
+            latest.id,
+          )
+        : null,
+    };
+  }
 
-    return this.parserReleaseDto(certified);
+  async authorizeStudentReplay(
+    actor: StudentReplayActor,
+    connectionId: string,
+    channelId: string,
+    input: StudentInboundReplayAuthorizeDto,
+  ): Promise<StudentInboundReplayResultDto> {
+    await requireStudentReplayOwner(this.prisma, actor);
+    const ticket = this.readStudentPreview(input.previewToken);
+    if (
+      ticket.actorId !== actor.id ||
+      ticket.workspaceId !== actor.workspaceId ||
+      ticket.connectionId !== connectionId ||
+      ticket.channelId !== channelId
+    )
+      throw new BadRequestException(
+        "A previa nao pertence a este owner, conexao e canal",
+      );
+    const batch = await this.authorizeReplay(
+      connectionId,
+      input.confirmation,
+      input.selection,
+      channelId,
+      actor,
+      null,
+      {
+        ...ticket,
+        previewDigest: createHash("sha256")
+          .update(input.previewToken)
+          .digest("hex"),
+      },
+    );
+    return this.getStudentReplayResult(
+      actor,
+      connectionId,
+      channelId,
+      batch.id,
+    );
+  }
+
+  async getStudentReplayResult(
+    actor: StudentReplayActor,
+    connectionId: string,
+    channelId: string,
+    batchId: string,
+  ): Promise<StudentInboundReplayResultDto> {
+    await requireStudentReplayOwner(this.prisma, actor);
+    await this.loadConnection(connectionId, actor.workspaceId);
+    const batch = await this.prisma.inboundWebhookReplayBatch.findFirst({
+      where: {
+        id: batchId,
+        workspaceId: actor.workspaceId,
+        connectionId,
+        channelId,
+      },
+      include: { items: { orderBy: { id: "asc" } } },
+    });
+    if (
+      !batch ||
+      batch.workspaceId !== actor.workspaceId ||
+      batch.connectionId !== connectionId ||
+      batch.channelId !== channelId
+    )
+      throw new NotFoundException("Recuperacao nao encontrada neste canal");
+    return this.studentBatchResult(this.prisma, batch);
+  }
+
+  private async studentBatchResult(
+    client: Prisma.TransactionClient,
+    batch: Prisma.InboundWebhookReplayBatchGetPayload<{
+      include: { items: true };
+    }>,
+  ): Promise<StudentInboundReplayResultDto> {
+    const logs = await client.conversionEventLog.findMany({
+      where: {
+        workspaceId: batch.workspaceId,
+        id: {
+          in: batch.items.flatMap((i) =>
+            i.conversionEventLogId ? [i.conversionEventLogId] : [],
+          ),
+        },
+      },
+      select: { id: true, status: true, sentAt: true },
+    });
+    const byId = new Map(logs.map((log) => [log.id, log]));
+    const claims = await client.auditLog.findMany({
+      where: {
+        workspaceId: batch.workspaceId,
+        action: "inbound_webhook.dispatch.claim",
+        targetId: { in: logs.map((log) => log.id) },
+      },
+      select: { targetId: true, resultStatus: true, createdAt: true },
+    });
+    const byClaim = new Map(claims.map((claim) => [claim.targetId, claim]));
+    const items = batch.items.map(
+      (item): StudentInboundReplayResultDto["items"][number] => {
+        const log = item.conversionEventLogId
+          ? byId.get(item.conversionEventLogId)
+          : null;
+        const claim = item.conversionEventLogId
+          ? byClaim.get(item.conversionEventLogId)
+          : null;
+        let state: StudentInboundReplayResultDto["state"];
+        if (item.status === "duplicate") state = "delivery_unknown";
+        else if (log?.status === "sent" && log.sentAt) state = "delivered";
+        else if (
+          claim?.resultStatus === "delivery_unknown" ||
+          log?.status === "delivery_unknown"
+        )
+          state = "delivery_unknown";
+        else if (claim?.resultStatus === "dispatch_started") {
+          // Keep polling during the sender's bounded 15s request plus 5s for
+          // persistence. This is only a display window, never a lease/retry:
+          // the permanent fence remains consumed after it expires.
+          const age =
+            claim.createdAt instanceof Date
+              ? Date.now() - claim.createdAt.getTime()
+              : Infinity;
+          state = age >= 0 && age < 20_000 ? "processing" : "delivery_unknown";
+        } else if (
+          item.status === "failed" ||
+          item.status === "skipped" ||
+          (log && !["ready_to_send", "sending"].includes(log.status))
+        )
+          state = "failed";
+        else if (item.status === "processing" || log?.status === "sending")
+          state = "processing";
+        else if (item.status === "materialized" && !log)
+          state = "delivery_unknown";
+        else state = "pending";
+        return { id: item.id, state };
+      },
+    );
+    const count = (state: StudentInboundReplayResultDto["state"]) =>
+      items.filter((i) => i.state === state).length;
+    const delivered = count("delivered"),
+      failed = count("failed"),
+      unknown = count("delivery_unknown");
+    const state = unknown
+      ? "delivery_unknown"
+      : failed
+        ? "failed"
+        : items.length > 0 && delivered === items.length
+          ? "delivered"
+          : items.some((i) => i.state === "processing")
+            ? "processing"
+            : "pending";
+    return {
+      batchId: batch.id,
+      selection: batch.selection,
+      state,
+      total: batch.totalItems,
+      delivered,
+      failed,
+      unknown,
+      pending: count("pending") + count("processing"),
+      items,
+    };
+  }
+
+  private async studentCanarySucceeded(
+    client: Prisma.TransactionClient,
+    actor: StudentReplayActor,
+    connectionId: string,
+    channelId: string,
+    context: string,
+  ): Promise<boolean> {
+    const canaries = await client.inboundWebhookReplayBatch.findMany({
+      where: {
+        workspaceId: actor.workspaceId,
+        connectionId,
+        channelId,
+        selection: "canary_1",
+        status: "completed",
+        totalItems: 1,
+      },
+      include: { items: true },
+      orderBy: { createdAt: "desc" },
+      take: REPLAY_HISTORY_LIMIT,
+    });
+    for (const canary of canaries) {
+      const audit = await client.auditLog.findFirst({
+        where: {
+          workspaceId: actor.workspaceId,
+          targetId: canary.id,
+          action: "inbound_webhook.replay.authorize",
+        },
+        select: { afterSummary: true },
+      });
+      if (
+        (audit?.afterSummary as { studentContext?: string } | null)
+          ?.studentContext !== context ||
+        !(await studentBatchAuthorizationValid(
+          client,
+          actor.workspaceId,
+          canary.id,
+        ))
+      )
+        continue;
+      const result = await this.studentBatchResult(client, canary);
+      if (
+        result.total === 1 &&
+        result.delivered === 1 &&
+        result.state === "delivered" &&
+        canary.items[0]?.status === "materialized"
+      )
+        return true;
+    }
+    return false;
+  }
+
+  private async studentCandidates(
+    actor: StudentReplayActor,
+    connectionId: string,
+    channelId: string,
+  ) {
+    const connection = await this.loadConnection(
+      connectionId,
+      actor.workspaceId,
+    );
+    const records = await this.prisma.inboundWebhookEvent.findMany({
+      where: {
+        workspaceId: actor.workspaceId,
+        connectionId,
+        channelId,
+        hasCtwa: true,
+        classification: "eligible_route_resolved",
+        replayItem: { is: null },
+        productionItem: { is: null },
+        occurredAt: {
+          gte: new Date(Date.now() - 7 * 86400_000),
+          lte: new Date(),
+        },
+      },
+      include: {
+        ...replayItemInclude.event.include,
+        replayItem: true,
+        productionItem: true,
+      },
+      orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+      take: REPLAY_CANDIDATE_SCAN_LIMIT,
+    });
+    const events: typeof records = [];
+    for (const event of records) {
+      if (
+        event.workspaceId !== actor.workspaceId ||
+        event.connectionId !== connectionId ||
+        event.channelId !== channelId ||
+        event.replayItem ||
+        event.productionItem ||
+        !this.payloadAvailable(event.delivery, new Date()) ||
+        !this.replayWindowEligible(event, connection) ||
+        !this.studentIdentityReady(event)
+      )
+        continue;
+      const ad = await this.prisma.metaAd.findFirst({
+        where: { workspaceId: actor.workspaceId, adId: event.adId! },
+        select: { adAccountId: true },
+      });
+      if (
+        !this.routeReady(event, ad?.adAccountId ?? null) ||
+        !(await this.currentRouteReady(this.prisma, actor.workspaceId, event))
+      )
+        continue;
+      if (
+        await this.prisma.conversionEventLog.findFirst({
+          where: {
+            workspaceId: actor.workspaceId,
+            dedupeKey: `inbound-webhook:${connectionId}:${event.dedupeKey}`,
+          },
+          select: { id: true },
+        })
+      )
+        continue;
+      events.push(event);
+    }
+    return { events, scanned: records.length };
+  }
+
+  private studentIdentityReady(event: ReplayItemRecord["event"]): boolean {
+    if (
+      !event.hasCtwa ||
+      !event.adId ||
+      event.classification !== "eligible_route_resolved" ||
+      event.provider !== "meta_cloud" ||
+      event.connection.provider !== event.provider ||
+      event.delivery.provider !== event.provider ||
+      event.delivery.workspaceId !== event.workspaceId ||
+      event.delivery.connectionId !== event.connectionId ||
+      event.connection.workspaceId !== event.workspaceId ||
+      event.channel.workspaceId !== event.workspaceId ||
+      event.channel.connectionId !== event.connectionId ||
+      event.channel.id !== event.channelId ||
+      event.channel.status !== "active" ||
+      event.delivery.parserVersion !== event.connection.parserRelease.version ||
+      !inboundParserProductionEligible(
+        event.connection.parserRelease,
+        this.parserRegistry,
+      )
+    )
+      return false;
+    try {
+      const parsed = this.reparseEvent({ event } as ReplayItemRecord);
+      return Boolean(
+        parsed.ctwaClid &&
+        parsed.adId &&
+        normalizePhoneIdentity(parsed.contact.phoneNumber) &&
+        parsed.occurredAt.getTime() === event.occurredAt.getTime(),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private signStudentPreview(ticket: StudentPreviewTicket): string {
+    const key = this.env.INBOUND_WEBHOOK_ENCRYPTION_KEY;
+    if (!key)
+      throw new ServiceUnavailableException(
+        "Criptografia de webhooks indisponivel",
+      );
+    const body = Buffer.from(JSON.stringify(ticket)).toString("base64url");
+    return `${body}.${createHmac("sha256", key).update(`student-replay-v1:${body}`).digest("base64url")}`;
+  }
+
+  private readStudentPreview(token: string): StudentPreviewTicket {
+    try {
+      const [body, signature, extra] = token.split(".");
+      if (
+        !body ||
+        !signature ||
+        extra ||
+        !this.env.INBOUND_WEBHOOK_ENCRYPTION_KEY
+      )
+        throw new Error();
+      const expected = createHmac(
+        "sha256",
+        this.env.INBOUND_WEBHOOK_ENCRYPTION_KEY,
+      )
+        .update(`student-replay-v1:${body}`)
+        .digest();
+      const actual = Buffer.from(signature, "base64url");
+      if (
+        actual.length !== expected.length ||
+        !timingSafeEqual(actual, expected)
+      )
+        throw new Error();
+      const ticket = JSON.parse(
+        Buffer.from(body, "base64url").toString("utf8"),
+      ) as StudentPreviewTicket;
+      if (
+        !Number.isFinite(ticket.expires) ||
+        ticket.expires <= Date.now() ||
+        !ticket.context ||
+        !ticket.eventHashes ||
+        Object.keys(ticket.eventHashes).length > REPLAY_BATCH_LIMIT
+      )
+        throw new Error();
+      return ticket;
+    } catch {
+      throw new BadRequestException(
+        "A previa expirou ou mudou. Atualize a previa antes de enviar",
+      );
+    }
   }
 
   async getPreview(
@@ -355,11 +781,27 @@ export class InboundWebhookReplayService {
     const adAccountsByAd = new Map(ads.map((ad) => [ad.adId, ad.adAccountId]));
     const payloadAvailable = (event: (typeof events)[number]) =>
       this.payloadAvailable(event.delivery, now);
+    const routeReadiness = new Map(
+      await Promise.all(
+        events.map(
+          async (event) =>
+            [
+              event,
+              this.routeReady(
+                event,
+                event.adId ? (adAccountsByAd.get(event.adId) ?? null) : null,
+              ) &&
+                (await this.currentRouteReady(
+                  this.prisma,
+                  connection.workspaceId,
+                  event,
+                )),
+            ] as const,
+        ),
+      ),
+    );
     const routeResolved = (event: (typeof events)[number]) =>
-      this.routeReady(
-        event,
-        event.adId ? (adAccountsByAd.get(event.adId) ?? null) : null,
-      );
+      routeReadiness.get(event) === true;
     const insideReplayWindow = (event: (typeof events)[number]) =>
       this.replayWindowEligible(event, connection);
     const nextPayloadExpiresAt = events
@@ -396,7 +838,9 @@ export class InboundWebhookReplayService {
         provider: connection.provider,
         displayName: connection.displayName,
         parserVersion: connection.parserRelease.version,
-        parserReleaseStatus: connection.parserRelease.status,
+        parserReleaseStatus: effectiveInboundParserStatus(
+          connection.parserRelease,
+        ),
         status: connection.status,
         productionActivatedAt:
           connection.productionActivatedAt?.toISOString() ?? null,
@@ -467,11 +911,22 @@ export class InboundWebhookReplayService {
     confirmation: string,
     selection: InboundWebhookReplaySelectionDto,
     channelId: string,
-    actor: PlatformAdminUser,
+    actor: StudentReplayActor,
     sourceIp: string | null,
+    proof?: StudentReplayProof,
   ): Promise<BackofficeInboundWebhookReplayBatchDto> {
     this.assertReplayEnabled();
-    const connection = await this.loadConnection(connectionId);
+    await this.assertStudentReplayLicense();
+    await requireStudentReplayOwner(this.prisma, actor);
+    const connection = await this.loadConnection(
+      connectionId,
+      actor.workspaceId,
+    );
+    if (!proof || !["canary_1", "remaining"].includes(selection))
+      throw new BadRequestException(
+        "Revise a previa antes de confirmar o envio",
+      );
+    assertMetaCloudSigningConfigured(connection.provider, this.env);
     const requestedLimit = this.replaySelectionLimit(selection);
     const replayChannelId = channelId.trim();
 
@@ -493,7 +948,12 @@ export class InboundWebhookReplayService {
       );
     }
 
-    if (connection.parserRelease.status !== "certified") {
+    if (
+      !inboundParserProductionEligible(
+        connection.parserRelease,
+        this.parserRegistry,
+      )
+    ) {
       throw new ConflictException(
         "Certifique o parser antes de autorizar o replay",
       );
@@ -516,6 +976,48 @@ export class InboundWebhookReplayService {
 
     try {
       batch = await this.prisma.$transaction(async (tx) => {
+        // Serialize concurrent replay approvals on the existing connection row,
+        // then revalidate the immutable snapshot and pending dispatches.
+        await tx.$queryRaw`SELECT "id" FROM "InboundWebhookConnection" WHERE "id" = ${connection.id} AND "workspaceId" = ${actor.workspaceId} FOR UPDATE`;
+        await requireStudentReplayOwner(tx, actor);
+        await this.assertStudentReplayLicense();
+        if (proof.expires <= Date.now())
+          throw new BadRequestException(
+            "A previa expirou ou mudou. Atualize a previa antes de enviar",
+          );
+        const currentContext = await studentReplayContext(
+          tx,
+          actor.workspaceId,
+          connection.id,
+          replayChannelId,
+        );
+        if (!currentContext || currentContext !== proof.context)
+          throw new ConflictException(
+            "A conexao ou a rota mudou. Atualize a previa antes de enviar",
+          );
+        if (
+          selection === "remaining" &&
+          !(await this.studentCanarySucceeded(
+            tx,
+            actor,
+            connection.id,
+            replayChannelId,
+            currentContext,
+          ))
+        )
+          throw new ConflictException(
+            "Envie um de teste e aguarde a confirmacao de entrega antes de recuperar os demais",
+          );
+        if (
+          await studentReplayDispatchUnsettled(
+            tx,
+            actor.workspaceId,
+            connection.id,
+          )
+        )
+          throw new ConflictException(
+            "Esta conexao ja possui um replay em andamento",
+          );
         const activeBatch = await tx.inboundWebhookReplayBatch.findFirst({
           where: {
             workspaceId: connection.workspaceId,
@@ -538,6 +1040,7 @@ export class InboundWebhookReplayService {
             workspaceId: connection.workspaceId,
             connectionId: connection.id,
             channelId: replayChannelId,
+            id: { in: Object.keys(proof.eventHashes) },
             hasCtwa: true,
             adId: { not: null },
             classification: "eligible_route_resolved",
@@ -554,56 +1057,10 @@ export class InboundWebhookReplayService {
               encryptionKeyVersion: { not: null },
             },
           },
-          select: {
-            id: true,
-            adId: true,
-            classification: true,
-            resolvedBusinessConnectionId: true,
-            resolvedReportingAccountId: true,
-            resolvedConversionDestinationId: true,
-            resolvedBusinessConnection: {
-              select: {
-                status: true,
-                credential: {
-                  select: {
-                    status: true,
-                  },
-                },
-              },
-            },
-            resolvedReportingAccount: {
-              select: {
-                active: true,
-                adAccountId: true,
-                businessConnectionId: true,
-              },
-            },
-            resolvedConversionDestination: {
-              select: {
-                status: true,
-              },
-            },
-            channel: {
-              select: {
-                productionActivatedAt: true,
-                routes: {
-                  where: {
-                    active: true,
-                    validationStatus: "valid",
-                  },
-                  select: {
-                    metaBusinessConnectionId: true,
-                    metaReportingAccountId: true,
-                    metaConversionDestinationId: true,
-                  },
-                },
-              },
-            },
-            delivery: {
-              select: {
-                firstReceivedAt: true,
-              },
-            },
+          include: {
+            ...replayItemInclude.event.include,
+            replayItem: true,
+            productionItem: true,
           },
           orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
           take: REPLAY_CANDIDATE_SCAN_LIMIT,
@@ -625,15 +1082,32 @@ export class InboundWebhookReplayService {
         const adAccountsByAd = new Map(
           ads.map((ad) => [ad.adId, ad.adAccountId]),
         );
-        const events = candidates
-          .filter((event) => this.replayWindowEligible(event, connection))
-          .filter((event) =>
+        const events: typeof candidates = [];
+        for (const event of candidates) {
+          if (
+            studentReplayEventHash(event) === proof.eventHashes[event.id] &&
+            this.studentIdentityReady(event) &&
+            this.replayWindowEligible(event, connection) &&
             this.routeReady(
               event,
               event.adId ? (adAccountsByAd.get(event.adId) ?? null) : null,
-            ),
-          )
-          .slice(0, requestedLimit);
+            ) &&
+            (await this.currentRouteReady(tx, connection.workspaceId, event))
+          ) {
+            if (
+              await tx.conversionEventLog.findFirst({
+                where: {
+                  workspaceId: connection.workspaceId,
+                  dedupeKey: `inbound-webhook:${connection.id}:${event.dedupeKey}`,
+                },
+                select: { id: true },
+              })
+            )
+              continue;
+            events.push(event);
+            if (events.length === requestedLimit) break;
+          }
+        }
 
         if (events.length === 0) {
           throw new BadRequestException(
@@ -641,6 +1115,8 @@ export class InboundWebhookReplayService {
           );
         }
 
+        await requireStudentReplayOwner(tx, actor);
+        await this.assertStudentReplayLicense();
         const created = await tx.inboundWebhookReplayBatch.create({
           data: {
             workspaceId: connection.workspaceId,
@@ -675,6 +1151,7 @@ export class InboundWebhookReplayService {
 
         await tx.auditLog.create({
           data: {
+            id: `student-replay-preview:${proof.previewDigest}`,
             workspaceId: connection.workspaceId,
             actorUserId: actor.id,
             actorType: actor.role,
@@ -691,6 +1168,10 @@ export class InboundWebhookReplayService {
               requestedLimit,
               itemCount: inserted.count,
               batchLimit: REPLAY_BATCH_LIMIT,
+              studentContext: proof.context,
+              studentEventHashes: Object.fromEntries(
+                events.map((event) => [event.id, proof.eventHashes[event.id]]),
+              ),
             },
           },
         });
@@ -720,154 +1201,6 @@ export class InboundWebhookReplayService {
     }
 
     return this.batchDto(batch);
-  }
-
-  async retryTransientFailures(
-    connectionId: string,
-    batchId: string,
-    confirmation: string,
-    actor: PlatformAdminUser,
-    sourceIp: string | null,
-  ): Promise<BackofficeInboundWebhookReplayBatchDto> {
-    this.assertReplayEnabled();
-    const connection = await this.loadConnection(connectionId);
-
-    if (confirmation !== connection.displayName) {
-      throw new BadRequestException(
-        "Digite exatamente o nome da conexao para recuperar o lote",
-      );
-    }
-
-    const now = new Date();
-    const reset = await this.prisma.$transaction(async (tx) => {
-      const batch = await tx.inboundWebhookReplayBatch.findFirst({
-        where: {
-          id: batchId,
-          workspaceId: connection.workspaceId,
-          connectionId: connection.id,
-          status: {
-            in: ["completed_with_failures", "failed"],
-          },
-        },
-      });
-
-      if (!batch) {
-        throw new ConflictException(
-          "O lote nao esta disponivel para recuperacao",
-        );
-      }
-
-      const activeBatch = await tx.inboundWebhookReplayBatch.findFirst({
-        where: {
-          workspaceId: connection.workspaceId,
-          connectionId: connection.id,
-          id: { not: batch.id },
-          status: {
-            in: ["queued", "processing"],
-          },
-        },
-        select: { id: true },
-      });
-
-      if (activeBatch) {
-        throw new ConflictException(
-          "Esta conexao ja possui um replay em andamento",
-        );
-      }
-
-      const items = await tx.inboundWebhookReplayItem.findMany({
-        where: {
-          workspaceId: connection.workspaceId,
-          batchId: batch.id,
-          status: "failed",
-          errorCode: {
-            in: [...transientReplayErrorCodes],
-          },
-          event: {
-            delivery: {
-              payloadExpiresAt: { gt: now },
-              encryptedPayload: { not: null },
-              payloadIv: { not: null },
-              payloadTag: { not: null },
-              encryptionKeyVersion: { not: null },
-            },
-          },
-        },
-        select: { id: true },
-      });
-
-      if (items.length === 0) {
-        throw new BadRequestException(
-          "Nenhuma falha transitoria possui payload disponivel",
-        );
-      }
-
-      const itemIds = items.map((item) => item.id);
-      await tx.inboundWebhookReplayItem.updateMany({
-        where: {
-          workspaceId: connection.workspaceId,
-          batchId: batch.id,
-          id: { in: itemIds },
-        },
-        data: {
-          status: "queued",
-          errorCode: null,
-          processedAt: null,
-        },
-      });
-      const updated = await tx.inboundWebhookReplayBatch.update({
-        where: { id: batch.id },
-        data: {
-          status: "queued",
-          failedCount: {
-            decrement: items.length,
-          },
-          retryableFailedCount: 0,
-          retryCount: {
-            increment: 1,
-          },
-          completedAt: null,
-          lastRetriedAt: now,
-        },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          workspaceId: connection.workspaceId,
-          actorUserId: actor.id,
-          actorType: actor.role,
-          action: "inbound_webhook.replay.retry_transient",
-          targetType: "inbound_webhook_replay_batch",
-          targetId: batch.id,
-          sourceIp: this.sourceIp(sourceIp),
-          resultStatus: "queued",
-          afterSummary: {
-            connectionId: connection.id,
-            retryItemCount: items.length,
-            retryCount: updated.retryCount,
-          },
-        },
-      });
-
-      return {
-        batch: updated,
-        itemIds,
-      };
-    });
-
-    try {
-      await this.replayQueue.enqueueBatch({
-        workspaceId: reset.batch.workspaceId,
-        batchId: reset.batch.id,
-      });
-    } catch {
-      await this.markRetryQueueUnavailable(reset.batch, reset.itemIds);
-      throw new ServiceUnavailableException(
-        "Nao foi possivel recuperar o lote; tente novamente",
-      );
-    }
-
-    return this.batchDto(reset.batch);
   }
 
   async processBatch(
@@ -983,19 +1316,48 @@ export class InboundWebhookReplayService {
     conversionEventLogId: string;
     duplicate: boolean;
   }> {
+    await this.assertStudentReplayLicense();
+    this.assertReplayEnabled();
     const event = item.event;
     const connection = event.connection;
     const delivery = event.delivery;
     const business = event.resolvedBusinessConnection;
     const reporting = event.resolvedReportingAccount;
     const destination = event.resolvedConversionDestination;
-    const routeStillActive = event.channel.routes.some(
-      (route) =>
-        route.metaBusinessConnectionId === event.resolvedBusinessConnectionId &&
-        route.metaReportingAccountId === event.resolvedReportingAccountId &&
-        route.metaConversionDestinationId ===
-          event.resolvedConversionDestinationId,
-    );
+    const resolved = {
+      businessConnectionId: event.resolvedBusinessConnectionId,
+      reportingAccountId: event.resolvedReportingAccountId,
+      conversionDestinationId: event.resolvedConversionDestinationId,
+    };
+    const routeStillActive =
+      event.channel.routes.filter(
+        (route) =>
+          route.workspaceId === event.workspaceId &&
+          route.active &&
+          route.validationStatus === "valid" &&
+          inboundMetaRouteMatches(route, resolved),
+      ).length === 1;
+    // Only the instance bound to this tenant-owned inbound origin is trusted.
+    const channelInstance = event.channel.whatsappInstance;
+    if (
+      item.workspaceId !== event.workspaceId ||
+      connection.workspaceId !== event.workspaceId ||
+      event.connectionId !== connection.id ||
+      event.channelId !== event.channel.id ||
+      connection.provider !== event.provider ||
+      delivery.provider !== event.provider ||
+      delivery.workspaceId !== event.workspaceId ||
+      delivery.connectionId !== connection.id ||
+      event.channel.workspaceId !== event.workspaceId ||
+      event.channel.connectionId !== connection.id ||
+      (event.channel.whatsappInstanceId &&
+        (!channelInstance ||
+          channelInstance.id !== event.channel.whatsappInstanceId ||
+          channelInstance.workspaceId !== event.workspaceId ||
+          channelInstance.status !== "active"))
+    ) {
+      throw new ReplayItemFailure("inbound_webhook_replay_context_changed");
+    }
     const now = new Date();
 
     if (
@@ -1009,7 +1371,11 @@ export class InboundWebhookReplayService {
     if (
       connection.removedAt ||
       !["observation", "production"].includes(connection.status) ||
-      connection.parserRelease.status !== "certified" ||
+      connection.parserRelease.provider !== connection.provider ||
+      !inboundParserProductionEligible(
+        connection.parserRelease,
+        this.parserRegistry,
+      ) ||
       connection.parserRelease.version !== delivery.parserVersion
     ) {
       throw new ReplayItemFailure("inbound_webhook_replay_context_changed");
@@ -1023,12 +1389,16 @@ export class InboundWebhookReplayService {
 
     if (
       !business ||
+      business.workspaceId !== event.workspaceId ||
+      business.credential.workspaceId !== event.workspaceId ||
       business.status !== "active" ||
       business.credential.status !== "active" ||
       !reporting ||
+      reporting.workspaceId !== event.workspaceId ||
       !reporting.active ||
       reporting.businessConnectionId !== business.id ||
       !destination ||
+      destination.workspaceId !== event.workspaceId ||
       destination.status !== "configured" ||
       !routeStillActive
     ) {
@@ -1039,6 +1409,7 @@ export class InboundWebhookReplayService {
       throw new ReplayItemFailure("inbound_webhook_replay_payload_unavailable");
     }
 
+    assertMetaCloudSigningConfigured(connection.provider, this.env);
     const parsedEvent = this.reparseEvent(item);
     const phone = normalizePhoneIdentity(parsedEvent.contact.phoneNumber);
     const phoneHash = hashPhoneIdentity(parsedEvent.contact.phoneNumber);
@@ -1063,8 +1434,36 @@ export class InboundWebhookReplayService {
       throw new ReplayItemFailure("inbound_webhook_replay_route_invalid");
     }
 
+    const currentRoute = await new InboundWebhookMetaRouteReaderService(
+      this.prisma,
+    ).previewRoute({
+      workspaceId: event.workspaceId,
+      adId: event.adId,
+      ...resolved,
+    });
+    if (
+      currentRoute.status !== "resolved" ||
+      currentRoute.reportingAccountId !== reporting.id ||
+      currentRoute.businessConnectionId !== business.id ||
+      currentRoute.conversionDestinationId !== destination.id
+    ) {
+      throw new ReplayItemFailure("inbound_webhook_replay_route_invalid");
+    }
+
+    if (
+      !(await studentBatchAuthorizationValid(
+        this.prisma,
+        item.workspaceId,
+        item.batchId,
+        item.eventId,
+      ))
+    )
+      throw new ReplayItemFailure(
+        "inbound_webhook_replay_authorization_changed",
+      );
     const lead = await this.leads.upsertFromWhatsappWebhook({
       workspaceId: event.workspaceId,
+      whatsappInstanceId: event.channel.whatsappInstanceId ?? undefined,
       name: parsedEvent.contact.name ?? undefined,
       phone,
       source: event.provider,
@@ -1085,6 +1484,18 @@ export class InboundWebhookReplayService {
       throw new ReplayItemFailure("inbound_webhook_replay_lead_invalid");
     }
 
+    await this.assertStudentReplayLicense();
+    if (
+      !(await studentBatchAuthorizationValid(
+        this.prisma,
+        item.workspaceId,
+        item.batchId,
+        item.eventId,
+      ))
+    )
+      throw new ReplayItemFailure(
+        "inbound_webhook_replay_authorization_changed",
+      );
     const conversion = await this.conversions.recordExternalConversion({
       workspaceId: event.workspaceId,
       externalConnectorId: null,
@@ -1115,7 +1526,22 @@ export class InboundWebhookReplayService {
       },
     });
 
-    if (conversion.deliveryStatus === "ready_to_send") {
+    if (
+      conversion.status !== "duplicate" &&
+      conversion.deliveryStatus === "ready_to_send"
+    ) {
+      await this.assertStudentReplayLicense();
+      if (
+        !(await studentBatchAuthorizationValid(
+          this.prisma,
+          item.workspaceId,
+          item.batchId,
+          item.eventId,
+        ))
+      )
+        throw new ReplayItemFailure(
+          "inbound_webhook_replay_authorization_changed",
+        );
       await this.conversionQueue.enqueueSend(
         conversion.conversionEventLogId,
         event.workspaceId,
@@ -1169,7 +1595,11 @@ export class InboundWebhookReplayService {
       result.error ||
       !parsedEvent ||
       parsedEvent.provider !== item.event.provider ||
-      parsedEvent.externalMessageId !== item.event.externalMessageId
+      parsedEvent.externalMessageId !== item.event.externalMessageId ||
+      parsedEvent.adId !== item.event.adId ||
+      parsedEvent.organizationId !== item.event.channel.organizationId ||
+      parsedEvent.channel.providerChannelId !==
+        item.event.channel.providerChannelId
     ) {
       throw new ReplayItemFailure("inbound_webhook_replay_event_mismatch");
     }
@@ -1408,10 +1838,11 @@ export class InboundWebhookReplayService {
     });
   }
 
-  private async loadConnection(connectionId: string) {
+  private async loadConnection(connectionId: string, workspaceId?: string) {
     const connection = await this.prisma.inboundWebhookConnection.findFirst({
       where: {
         id: connectionId,
+        ...(workspaceId ? { workspaceId } : {}),
         removedAt: null,
       },
       include: {
@@ -1419,7 +1850,10 @@ export class InboundWebhookReplayService {
       },
     });
 
-    if (!connection) {
+    if (
+      !connection ||
+      (workspaceId && connection.workspaceId !== workspaceId)
+    ) {
       throw new NotFoundException("Conexao nao encontrada");
     }
 
@@ -1439,7 +1873,7 @@ export class InboundWebhookReplayService {
       id: release.id,
       provider: release.provider,
       version: release.version,
-      status: release.status,
+      status: effectiveInboundParserStatus(release),
       certifiedAt: release.certifiedAt?.toISOString() ?? null,
       createdAt: release.createdAt.toISOString(),
       updatedAt: release.updatedAt.toISOString(),
@@ -1497,6 +1931,42 @@ export class InboundWebhookReplayService {
     };
   }
 
+  private async currentRouteReady(
+    client: ConstructorParameters<
+      typeof InboundWebhookMetaRouteReaderService
+    >[0],
+    workspaceId: string,
+    event: {
+      adId: string | null;
+      resolvedBusinessConnectionId: string | null;
+      resolvedReportingAccountId: string | null;
+      resolvedConversionDestinationId: string | null;
+    },
+  ): Promise<boolean> {
+    if (
+      !event.adId ||
+      !event.resolvedBusinessConnectionId ||
+      !event.resolvedReportingAccountId ||
+      !event.resolvedConversionDestinationId
+    )
+      return false;
+    const preview = await new InboundWebhookMetaRouteReaderService(
+      client,
+    ).previewRoute({
+      workspaceId,
+      adId: event.adId,
+      businessConnectionId: event.resolvedBusinessConnectionId,
+      reportingAccountId: event.resolvedReportingAccountId,
+      conversionDestinationId: event.resolvedConversionDestinationId,
+    });
+    return (
+      preview.status === "resolved" &&
+      preview.businessConnectionId === event.resolvedBusinessConnectionId &&
+      preview.reportingAccountId === event.resolvedReportingAccountId &&
+      preview.conversionDestinationId === event.resolvedConversionDestinationId
+    );
+  }
+
   private routeReady(
     event: {
       classification: string;
@@ -1543,14 +2013,13 @@ export class InboundWebhookReplayService {
       currentAdAccountId &&
       reporting.adAccountId === currentAdAccountId &&
       destination?.status === "configured" &&
-      event.channel.routes.some(
-        (route) =>
-          route.metaBusinessConnectionId ===
-            event.resolvedBusinessConnectionId &&
-          route.metaReportingAccountId === event.resolvedReportingAccountId &&
-          route.metaConversionDestinationId ===
-            event.resolvedConversionDestinationId,
-      ),
+      event.channel.routes.filter((route) =>
+        inboundMetaRouteMatches(route, {
+          businessConnectionId: event.resolvedBusinessConnectionId,
+          reportingAccountId: event.resolvedReportingAccountId,
+          conversionDestinationId: event.resolvedConversionDestinationId,
+        }),
+      ).length === 1,
     );
   }
 
@@ -1568,6 +2037,15 @@ export class InboundWebhookReplayService {
       productionActivatedAt: Date | null;
     },
   ): boolean {
+    if ("occurredAt" in event) {
+      const occurred = (event as { occurredAt: Date }).occurredAt;
+      if (
+        !(occurred instanceof Date) ||
+        occurred.getTime() > Date.now() ||
+        occurred.getTime() < Date.now() - 7 * 86400_000
+      )
+        return false;
+    }
     if (connection.status === "observation") {
       return true;
     }
@@ -1612,6 +2090,14 @@ export class InboundWebhookReplayService {
     const config = parseInboundWebhooksConfig(this.env);
 
     return config.enabled && config.replayEnabled;
+  }
+
+  private async assertStudentReplayLicense(): Promise<void> {
+    const decision = await this.licenseClient?.getLockState();
+    if (!decision || (!decision.inert && decision.locked))
+      throw new ConflictException(
+        "A licenca precisa estar utilizavel antes de recuperar CTWAs",
+      );
   }
 
   private replaySelectionLimit(

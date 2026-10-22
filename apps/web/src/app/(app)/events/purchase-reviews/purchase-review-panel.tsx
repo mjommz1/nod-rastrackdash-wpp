@@ -4,6 +4,7 @@ import type {
   ProviderConversionRuleDto,
   PurchaseReviewDto,
 } from "@wpptrack/shared";
+import { formatMoney } from "@wpptrack/shared";
 import { Check, Plus, Save, ShoppingCart, Trash2, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -30,10 +31,7 @@ type PurchaseReviewPanelProps = {
 
 function money(valueCents: number | null, currency = "BRL"): string {
   if (valueCents === null) return "Pendente";
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency,
-  }).format(valueCents / 100);
+  return formatMoney(valueCents, currency);
 }
 
 function ReviewRow({

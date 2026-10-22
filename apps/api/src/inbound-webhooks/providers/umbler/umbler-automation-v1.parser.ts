@@ -9,6 +9,7 @@ export const UMBLER_AUTOMATION_V1_PARSER_VERSION = "automation-v1";
 export type UmblerAutomationV1EventName = "QualifiedLead" | "Purchase";
 
 export type ParsedUmblerAutomationV1 = {
+  provider?: "umbler";
   schema: typeof UMBLER_AUTOMATION_V1_SCHEMA;
   source: typeof UMBLER_AUTOMATION_V1_SOURCE;
   automation: "lead_qualificado" | "compra_aprovada";

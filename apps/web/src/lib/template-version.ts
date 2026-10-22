@@ -5,7 +5,8 @@ import { isFullGitSha } from "./template-version-format";
 /**
  * Why the version could not be verified:
  * - `missing_deployed_sha`: the API answered, but this build carries no valid
- *   commit SHA (GIT_SHA build arg not set), so there is nothing to compare.
+ *   commit SHA (the image build could not confirm a clean git checkout), so
+ *   there is nothing to compare.
  * - `unavailable`: the check failed (network, API error, malformed answer) or
  *   the API itself could not reach the upstream repository.
  */

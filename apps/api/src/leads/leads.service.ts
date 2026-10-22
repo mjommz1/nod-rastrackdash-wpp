@@ -1,19 +1,50 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
-import type {
-  LeadDetailDto,
-  LeadListItemDto,
-  LeadListPageDto,
-  LeadListQueryDto,
-  LeadStatusDto,
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
+import {
+  leadLifecycleLabel,
+  leadSourceLabel,
+  type LeadDetailDto,
+  type LeadListItemDto,
+  type LeadListPageDto,
+  type LeadListQueryDto,
+  type LeadStatusDto,
 } from "@wpptrack/shared";
+import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../common/prisma/prisma.service";
 import {
   hashPhoneIdentity,
   normalizePhoneIdentity,
 } from "../common/phone/phone-identity";
 import { dateRangeInTimezone } from "../external-data/external-event-policy";
+import {
+  chunked,
+  firstContactScopeWhere,
+  leadFirstContactBeforeWhere,
+  leadFirstContactInRangeWhere,
+  loadLeadIdsByPhoneHash,
+  paidLeadSubmittedEventWhere,
+  phoneHashesWithoutLeadId,
+  repeatConversationLeadIds,
+  withFirstContactAttribution,
+  type LeadAttributionField,
+  type LeadPeriodRange,
+} from "./lead-cohort";
+import {
+  leadExportMaxRows,
+  maskedLeadAd,
+  maskedLeadAdSet,
+  maskedLeadCampaign,
+  maskedLeadName,
+  maskedLeadPhone,
+  type LeadExportRow,
+} from "./leads-export";
 
 const leadPeriodTimezone = "America/Sao_Paulo";
+const leadExportBatchSize = 1000;
 
 type LeadRecord = {
   id: string;
@@ -108,6 +139,8 @@ export type UpsertWhatsappLeadInput = {
   recordMessageTimestamps?: boolean;
   preserveExistingSource?: boolean;
   preserveEarliestFirstMessageAt?: boolean;
+  /** Fill `name` only while the lead has none; never overwrite an existing one. */
+  preserveExistingName?: boolean;
 };
 
 @Injectable()
@@ -127,96 +160,46 @@ export class LeadsService {
     workspaceId: string,
     query: LeadListQueryDto,
   ): Promise<LeadListPageDto> {
-    const conversationPeriodRange = this.conversationPeriodRange(query);
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? query.limit ?? 50;
-    const eventLeadIds = query.eventName
-      ? await this.leadIdsForEvent(workspaceId, query.eventName)
-      : null;
-    const searchPhoneHash = this.phoneHashForSearch(query.search);
-    const attributionFilter =
-      query.attribution === "paid"
-        ? {
-            OR: [
-              { campaignId: { not: null } },
-              { adSetId: { not: null } },
-              { adId: { not: null } },
-              { ctwaClid: { not: null } },
-            ],
-          }
-        : query.attribution === "organic"
-          ? {
-              campaignId: null,
-              adSetId: null,
-              adId: null,
-              ctwaClid: null,
-            }
-          : null;
-    const searchFilter = query.search
-      ? {
-          OR: [
-            {
-              name: {
-                contains: query.search,
-                mode: "insensitive" as const,
-              },
-            },
-            {
-              phoneDisplay: {
-                contains: query.search,
-                mode: "insensitive" as const,
-              },
-            },
-            ...(searchPhoneHash ? [{ phoneHash: searchPhoneHash }] : []),
-          ],
-        }
-      : null;
-    const periodFilter = conversationPeriodRange
-      ? {
-          OR: [
-            { firstMessageAt: conversationPeriodRange },
-            {
-              firstMessageAt: null,
-              createdAt: conversationPeriodRange,
-            },
-          ],
-        }
-      : null;
+    const buildWhere = await this.leadWhereBuilder(workspaceId, query);
+    const where = buildWhere(query.attribution);
 
-    if (eventLeadIds && eventLeadIds.length === 0) {
+    if (!where) {
       return {
         items: [],
         pagination: { page, pageSize, totalItems: 0, totalPages: 0 },
       };
     }
 
-    const where = {
+    // Same filters without the origin one, split paid/organic, so the page can
+    // show organic leads as their own count. Issued before the list count so
+    // that one stays the last count of the request.
+    const paidWhere = buildWhere("paid");
+    const organicWhere = buildWhere("organic");
+    const [paidCount, organicCount, pageLeads, totalItems] = (await Promise.all(
+      [
+        paidWhere ? this.prisma.lead.count({ where: paidWhere }) : 0,
+        organicWhere ? this.prisma.lead.count({ where: organicWhere }) : 0,
+        this.prisma.lead.findMany({
+          where,
+          orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+        }),
+        this.prisma.lead.count({ where }),
+      ],
+    )) as [unknown, unknown, LeadRecord[], number];
+    // Campaign/ad shown = the one of the first contact, like the reports.
+    const leads = await withFirstContactAttribution(
+      this.prisma,
       workspaceId,
-      ...(eventLeadIds ? { id: { in: eventLeadIds } } : {}),
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.label ? { labels: { has: query.label } } : {}),
-      ...(query.campaignId ? { campaignId: query.campaignId } : {}),
-      ...(query.adSetId ? { adSetId: query.adSetId } : {}),
-      ...(query.adId ? { adId: query.adId } : {}),
-      ...(attributionFilter || searchFilter || periodFilter
-        ? {
-            AND: [
-              ...(attributionFilter ? [attributionFilter] : []),
-              ...(searchFilter ? [searchFilter] : []),
-              ...(periodFilter ? [periodFilter] : []),
-            ],
-          }
-        : {}),
-    };
-    const [leads, totalItems] = (await Promise.all([
-      this.prisma.lead.findMany({
-        where,
-        orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
-      this.prisma.lead.count({ where }),
-    ])) as [LeadRecord[], number];
+      pageLeads,
+    );
+    const attributionCounts =
+      typeof paidCount === "number" && typeof organicCount === "number"
+        ? { paid: paidCount, organic: organicCount }
+        : null;
     const leadIds = leads.map((lead) => lead.id);
     const adIds = Array.from(
       new Set(leads.map((lead) => lead.adId).filter(Boolean)),
@@ -228,10 +211,7 @@ export class LeadsService {
               workspaceId,
               leadId: { in: leadIds },
             },
-            orderBy: [
-              { eventOccurredAt: "desc" },
-              { createdAt: "desc" },
-            ],
+            orderBy: [{ eventOccurredAt: "desc" }, { createdAt: "desc" }],
             select: {
               leadId: true,
               eventName: true,
@@ -254,13 +234,9 @@ export class LeadsService {
           }) as Promise<AdHierarchyRecord[]>)
         : Promise.resolve([]),
     ]);
-    const hierarchyByAdId = new Map(
-      adHierarchy.map((ad) => [ad.adId, ad]),
-    );
+    const hierarchyByAdId = new Map(adHierarchy.map((ad) => [ad.adId, ad]));
     const resolvedLeads = leads.map((lead) => {
-      const hierarchy = lead.adId
-        ? hierarchyByAdId.get(lead.adId)
-        : undefined;
+      const hierarchy = lead.adId ? hierarchyByAdId.get(lead.adId) : undefined;
 
       return hierarchy
         ? {
@@ -314,7 +290,427 @@ export class LeadsService {
         totalItems,
         totalPages: totalItems > 0 ? Math.ceil(totalItems / pageSize) : 0,
       },
+      ...(attributionCounts ? { attributionCounts } : {}),
     };
+  }
+
+  /**
+   * The one place that turns the Leads filters into a query, shared by the
+   * list and the export so both always agree. `null` means nothing can match.
+   */
+  private async buildLeadWhere(
+    workspaceId: string,
+    query: Omit<LeadListQueryDto, "page" | "pageSize" | "limit">,
+  ) {
+    return (await this.leadWhereBuilder(workspaceId, query))(query.attribution);
+  }
+
+  /**
+   * Resolves every lookup once and returns a builder that only varies the
+   * origin (attribution) filter, so the list and its paid/organic split share
+   * one set of queries.
+   */
+  private async leadWhereBuilder(
+    workspaceId: string,
+    query: Omit<LeadListQueryDto, "page" | "pageSize" | "limit">,
+  ) {
+    const conversationPeriodRange = this.conversationPeriodRange(query);
+    const eventLeadIds = query.eventName
+      ? await this.leadIdsForEvent(workspaceId, query.eventName)
+      : null;
+    const searchPhoneHash = this.phoneHashForSearch(query.search);
+    const attributionWhere = (attribution: LeadListQueryDto["attribution"]) =>
+      attribution === "paid"
+        ? {
+            OR: [
+              { campaignId: { not: null } },
+              { adSetId: { not: null } },
+              { adId: { not: null } },
+              { ctwaClid: { not: null } },
+            ],
+          }
+        : attribution === "organic"
+          ? {
+              campaignId: null,
+              adSetId: null,
+              adId: null,
+              ctwaClid: null,
+            }
+          : null;
+    const searchFilter = query.search
+      ? {
+          OR: [
+            {
+              name: {
+                contains: query.search,
+                mode: "insensitive" as const,
+              },
+            },
+            {
+              phoneDisplay: {
+                contains: query.search,
+                mode: "insensitive" as const,
+              },
+            },
+            ...(searchPhoneHash ? [{ phoneHash: searchPhoneHash }] : []),
+          ],
+        }
+      : null;
+    // Campaign/ad set/ad drill-downs follow the FIRST-contact attribution, the
+    // same rule the reports use, so a report link opens a list of the same size.
+    const scopeFilters = await Promise.all(
+      (["campaignId", "adSetId", "adId"] as LeadAttributionField[]).flatMap(
+        (field) => {
+          const value = query[field];
+
+          return value
+            ? [firstContactScopeWhere(this.prisma, workspaceId, field, value)]
+            : [];
+        },
+      ),
+    );
+    const returning = query.base === "returning";
+    const repeat = query.base === "repeat";
+    // "Voltaram no periodo" needs a period start: without it nobody is "before".
+    // "Mais de uma conversa" counts conversations inside a period, new or not.
+    const baseFilter = returning
+      ? await this.returningLeadFilter(workspaceId, conversationPeriodRange)
+      : repeat
+        ? await this.repeatConversationLeadFilter(
+            workspaceId,
+            conversationPeriodRange,
+          )
+        : null;
+    const periodFilter =
+      conversationPeriodRange && !returning && !repeat
+        ? leadFirstContactInRangeWhere(conversationPeriodRange)
+        : null;
+
+    if (
+      (eventLeadIds && eventLeadIds.length === 0) ||
+      ((returning || repeat) && !baseFilter)
+    ) {
+      return () => null;
+    }
+
+    return (attribution: LeadListQueryDto["attribution"]) => {
+      const attributionFilter = attributionWhere(attribution);
+
+      return {
+        workspaceId,
+        ...(eventLeadIds ? { id: { in: eventLeadIds } } : {}),
+        ...(query.status ? { status: query.status } : {}),
+        ...(query.label ? { labels: { has: query.label } } : {}),
+        ...(attributionFilter ||
+        searchFilter ||
+        periodFilter ||
+        baseFilter ||
+        scopeFilters.length
+          ? {
+              AND: [
+                ...scopeFilters,
+                ...(attributionFilter ? [attributionFilter] : []),
+                ...(searchFilter ? [searchFilter] : []),
+                ...(periodFilter ? [periodFilter] : []),
+                ...(baseFilter ?? []),
+              ],
+            }
+          : {}),
+      };
+    };
+  }
+
+  /**
+   * Leads que voltaram: a paid LeadSubmitted (new CTWA conversation) inside
+   * the period, from someone whose first contact was before it. Events without
+   * a lead id are matched by phone hash, like the reports do.
+   */
+  private async returningLeadFilter(
+    workspaceId: string,
+    range: LeadPeriodRange | null,
+  ) {
+    if (!range?.gte) {
+      return null;
+    }
+
+    const events = (await this.prisma.conversionEventLog.findMany({
+      where: {
+        workspaceId,
+        ...paidLeadSubmittedEventWhere,
+        eventOccurredAt: range,
+      },
+      select: { leadId: true, phoneHash: true },
+    })) as Array<{ leadId: string | null; phoneHash: string | null }>;
+    const leadIds = Array.from(
+      new Set(events.flatMap((event) => (event.leadId ? [event.leadId] : []))),
+    );
+    const phoneHashes = Array.from(
+      new Set(
+        events.flatMap((event) =>
+          !event.leadId && event.phoneHash ? [event.phoneHash] : [],
+        ),
+      ),
+    );
+
+    // Resolved here in chunks, so the list/count queries only carry the people
+    // who actually came back (never every lead with a conversation).
+    const returningIds = new Set<string>();
+    const idChunks = chunked(leadIds);
+    const hashChunks = chunked(phoneHashes);
+
+    for (
+      let index = 0;
+      index < Math.max(idChunks.length, hashChunks.length);
+      index += 1
+    ) {
+      const ids = idChunks[index] ?? [];
+      const hashes = hashChunks[index] ?? [];
+      const rows = (await this.prisma.lead.findMany({
+        where: {
+          workspaceId,
+          AND: [
+            {
+              OR: [
+                ...(ids.length ? [{ id: { in: ids } }] : []),
+                ...(hashes.length ? [{ phoneHash: { in: hashes } }] : []),
+              ],
+            },
+            leadFirstContactBeforeWhere(range.gte),
+          ],
+        },
+        select: { id: true },
+      })) as Array<{ id: string }>;
+
+      rows.forEach((row) => returningIds.add(row.id));
+    }
+
+    return returningIds.size ? [{ id: { in: [...returningIds] } }] : null;
+  }
+
+  /**
+   * Conversaram mais de uma vez: two or more paid LeadSubmitted (new CTWA
+   * conversations sent to Meta) inside the period, leads novos included.
+   * Events without a lead id count for every lead of their phone, with the
+   * same helper the reports use.
+   */
+  private async repeatConversationLeadFilter(
+    workspaceId: string,
+    range: LeadPeriodRange | null,
+  ) {
+    if (!range) {
+      return null;
+    }
+
+    const events = (await this.prisma.conversionEventLog.findMany({
+      where: {
+        workspaceId,
+        ...paidLeadSubmittedEventWhere,
+        eventOccurredAt: range,
+      },
+      select: { leadId: true, phoneHash: true },
+    })) as Array<{ leadId: string | null; phoneHash: string | null }>;
+    // Same rule as the reports (shared helper): a conversation without a lead
+    // id counts for every lead of its phone.
+    const leadIdsByPhoneHash = await loadLeadIdsByPhoneHash(
+      this.prisma,
+      workspaceId,
+      phoneHashesWithoutLeadId(events),
+    );
+    const repeatIds = repeatConversationLeadIds(events, leadIdsByPhoneHash);
+
+    return repeatIds.length ? [{ id: { in: repeatIds } }] : null;
+  }
+
+  /**
+   * Every lead that matches the Leads filters, in the order of the list, for
+   * the spreadsheet export. Refuses (before anything is sent) when the filters
+   * match more than the limit, so a file is never silently cut short.
+   *
+   * The matching ids are fixed up front, so leads that receive a message while
+   * the file is being built can neither repeat nor go missing.
+   */
+  async prepareLeadExport(
+    workspaceId: string,
+    query: Omit<LeadListQueryDto, "page" | "pageSize" | "limit"> & {
+      maskSensitive?: boolean;
+    },
+  ): Promise<{ totalItems: number; batches: AsyncGenerator<LeadExportRow[]> }> {
+    const where = await this.buildLeadWhere(workspaceId, query);
+    const totalItems = where ? await this.prisma.lead.count({ where }) : 0;
+
+    if (!where || totalItems === 0) {
+      return {
+        totalItems: 0,
+        batches: this.leadExportBatches(workspaceId, [], false),
+      };
+    }
+
+    this.assertExportWithinLimit(totalItems);
+
+    const snapshot = (await this.prisma.lead.findMany({
+      where,
+      orderBy: [
+        { lastMessageAt: "desc" },
+        { createdAt: "desc" },
+        { id: "desc" },
+      ],
+      select: { id: true },
+      take: leadExportMaxRows + 1,
+    })) as Array<{ id: string }>;
+
+    this.assertExportWithinLimit(snapshot.length);
+
+    return {
+      totalItems: snapshot.length,
+      batches: this.leadExportBatches(
+        workspaceId,
+        snapshot.map((lead) => lead.id),
+        query.maskSensitive === true,
+      ),
+    };
+  }
+
+  private assertExportWithinLimit(count: number): void {
+    if (count > leadExportMaxRows) {
+      throw new UnprocessableEntityException(
+        `Esta busca tem ${count.toLocaleString("pt-BR")} leads e o limite da exportação é ${leadExportMaxRows.toLocaleString("pt-BR")}. Use um período menor ou mais filtros e exporte de novo.`,
+      );
+    }
+  }
+
+  private async *leadExportBatches(
+    workspaceId: string,
+    leadIds: string[],
+    maskSensitive: boolean,
+  ): AsyncGenerator<LeadExportRow[]> {
+    for (let start = 0; start < leadIds.length; start += leadExportBatchSize) {
+      const ids = leadIds.slice(start, start + leadExportBatchSize);
+      const found = (await this.prisma.lead.findMany({
+        where: { workspaceId, id: { in: ids } },
+      })) as LeadRecord[];
+      const byId = new Map(found.map((lead) => [lead.id, lead]));
+      // Keep the snapshot order; a lead deleted meanwhile is simply skipped.
+      const leads = ids.flatMap((id) => {
+        const lead = byId.get(id);
+
+        return lead ? [lead] : [];
+      });
+
+      if (leads.length > 0) {
+        yield await this.toExportRows(workspaceId, leads, maskSensitive);
+      }
+    }
+  }
+
+  private async toExportRows(
+    workspaceId: string,
+    rowLeads: LeadRecord[],
+    maskSensitive: boolean,
+  ): Promise<LeadExportRow[]> {
+    // Campaign/ad set/ad of the first contact, the same as the list and reports.
+    const leads = await withFirstContactAttribution(
+      this.prisma,
+      workspaceId,
+      rowLeads,
+    );
+    const leadIds = leads.map((lead) => lead.id);
+    const adIds = Array.from(
+      new Set(leads.map((lead) => lead.adId).filter(Boolean)),
+    ) as string[];
+    const [conversionLogs, ads] = await Promise.all([
+      this.prisma.conversionEventLog.findMany({
+        where: { workspaceId, leadId: { in: leadIds } },
+        select: { leadId: true, eventName: true },
+      }) as Promise<Array<{ leadId: string | null; eventName: string }>>,
+      adIds.length
+        ? (this.prisma.metaAd.findMany({
+            where: { workspaceId, adId: { in: adIds } },
+            select: { adId: true, campaignId: true, adSetId: true, name: true },
+          }) as Promise<Array<AdHierarchyRecord & { name: string | null }>>)
+        : Promise.resolve([]),
+    ]);
+    const adById = new Map(ads.map((ad) => [ad.adId, ad]));
+    // Same rule as the list: the ad decides campaign and ad set when known.
+    const resolved = leads.map((lead) => {
+      const ad = lead.adId ? adById.get(lead.adId) : undefined;
+
+      return {
+        lead,
+        campaignId: ad?.campaignId ?? lead.campaignId,
+        adSetId: ad?.adSetId ?? lead.adSetId,
+        adName: ad?.name ?? null,
+      };
+    });
+    const campaignIds = Array.from(
+      new Set(resolved.map((row) => row.campaignId).filter(Boolean)),
+    ) as string[];
+    const adSetIds = Array.from(
+      new Set(resolved.map((row) => row.adSetId).filter(Boolean)),
+    ) as string[];
+    const [campaigns, adSets] = await Promise.all([
+      campaignIds.length
+        ? (this.prisma.metaCampaign.findMany({
+            where: { workspaceId, campaignId: { in: campaignIds } },
+            select: { campaignId: true, name: true },
+          }) as Promise<CampaignRecord[]>)
+        : Promise.resolve([]),
+      adSetIds.length
+        ? (this.prisma.metaAdSet.findMany({
+            where: { workspaceId, adSetId: { in: adSetIds } },
+            select: { adSetId: true, name: true },
+          }) as Promise<AdSetRecord[]>)
+        : Promise.resolve([]),
+    ]);
+    const campaignNameById = new Map(
+      campaigns.map((campaign) => [campaign.campaignId, campaign.name]),
+    );
+    const adSetNameById = new Map(
+      adSets.map((adSet) => [adSet.adSetId, adSet.name]),
+    );
+    const eventsByLead = new Map<string, Set<string>>();
+
+    for (const log of conversionLogs) {
+      if (log.leadId) {
+        const events = eventsByLead.get(log.leadId) ?? new Set<string>();
+        events.add(log.eventName);
+        eventsByLead.set(log.leadId, events);
+      }
+    }
+
+    return resolved.map(({ lead, campaignId, adSetId, adName }) => {
+      const item = this.toDto(
+        lead,
+        this.currentLifecycleEvent(lead, eventsByLead.get(lead.id)),
+        null,
+      );
+      const campaignName = campaignId
+        ? (campaignNameById.get(campaignId) ?? null)
+        : null;
+
+      return {
+        name: maskSensitive ? maskedLeadName : (lead.name ?? "Lead sem nome"),
+        phone: maskSensitive ? maskedLeadPhone : (lead.phoneDisplay ?? ""),
+        // Same first-contact rule as the cohort: legacy leads without a
+        // message time entered when the row was created.
+        enteredAt: lead.firstMessageAt ?? lead.createdAt,
+        lastActivityAt: lead.lastMessageAt,
+        campaign: maskSensitive
+          ? maskedLeadCampaign
+          : (campaignName ?? "Campanha nao resolvida"),
+        adSet: maskSensitive
+          ? maskedLeadAdSet
+          : adSetId
+            ? (adSetNameById.get(adSetId) ?? "")
+            : "",
+        ad: maskSensitive ? maskedLeadAd : (adName ?? ""),
+        source: leadSourceLabel(lead.source, lead.adId),
+        stage: leadLifecycleLabel(item),
+        // The ids point straight at the hidden campaign, so they go too.
+        campaignId: maskSensitive ? "" : (campaignId ?? ""),
+        adSetId: maskSensitive ? "" : (adSetId ?? ""),
+        adId: maskSensitive ? "" : (lead.adId ?? ""),
+      };
+    });
   }
 
   private async leadIdsForEvent(
@@ -369,10 +765,7 @@ export class LeadsService {
             workspaceId,
             OR: [{ leadId: lead.id }, { phoneHash: lead.phoneHash }],
           },
-          orderBy: [
-            { eventOccurredAt: "desc" },
-            { createdAt: "desc" },
-          ],
+          orderBy: [{ eventOccurredAt: "desc" }, { createdAt: "desc" }],
           select: {
             id: true,
             leadId: true,
@@ -483,8 +876,8 @@ export class LeadsService {
         adName: ads[0]?.name ?? null,
         creative: {
           thumbnailUrl: this.publicHttpUrl(lead.ctwaThumbnailUrl),
-          destinationUrl: this.publicHttpUrl(lead.ctwaSourceUrl)
-        }
+          destinationUrl: this.publicHttpUrl(lead.ctwaSourceUrl),
+        },
       },
       conversionEvents: conversionLogs.map((event) => ({
         id: event.id ?? "",
@@ -516,6 +909,7 @@ export class LeadsService {
 
   async upsertFromWhatsappWebhook(
     input: UpsertWhatsappLeadInput,
+    client: Pick<Prisma.TransactionClient, "lead"> = this.prisma,
   ): Promise<{ id: string } | null> {
     const normalizedPhone = input.phone
       ? normalizePhoneIdentity(input.phone)
@@ -531,7 +925,7 @@ export class LeadsService {
     const firstMessageAt = input.firstMessageAt ?? occurredAt;
     const lastMessageAt = input.lastMessageAt ?? occurredAt;
     const labels = this.normalizeLabels(input.labels);
-    const lead = await this.prisma.lead.upsert({
+    const lead = await client.lead.upsert({
       where: {
         workspaceId_phoneHash: {
           workspaceId: input.workspaceId,
@@ -558,9 +952,11 @@ export class LeadsService {
       },
       update: {
         whatsappInstanceId: input.whatsappInstanceId ?? undefined,
-        name: input.name ?? undefined,
+        name: input.preserveExistingName ? undefined : (input.name ?? undefined),
         phoneDisplay: this.formatPhone(input.phone) ?? undefined,
-        source: input.preserveExistingSource ? undefined : input.source ?? undefined,
+        source: input.preserveExistingSource
+          ? undefined
+          : (input.source ?? undefined),
         labels: labels ?? undefined,
         campaignId: input.campaignId ?? undefined,
         adSetId: input.adSetId ?? undefined,
@@ -581,12 +977,23 @@ export class LeadsService {
       },
     });
 
+    if (input.preserveExistingName && input.name) {
+      await client.lead.updateMany({
+        where: {
+          id: lead.id,
+          workspaceId: input.workspaceId,
+          OR: [{ name: null }, { name: "" }],
+        },
+        data: { name: input.name },
+      });
+    }
+
     if (
       recordMessageTimestamps &&
       input.preserveEarliestFirstMessageAt &&
       input.firstMessageAt
     ) {
-      await this.prisma.lead.updateMany({
+      await client.lead.updateMany({
         where: {
           id: lead.id,
           workspaceId: input.workspaceId,
@@ -655,11 +1062,7 @@ export class LeadsService {
       return null;
     }
 
-    return dateRangeInTimezone(
-      query.since,
-      query.until,
-      leadPeriodTimezone,
-    );
+    return dateRangeInTimezone(query.since, query.until, leadPeriodTimezone);
   }
 
   private statusFromEvent(

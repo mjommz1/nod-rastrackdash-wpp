@@ -1111,8 +1111,57 @@ html[data-presentation-mode="active"]
   letter-spacing: 0.02em;
 }
 
-.sidebar-collapsed .brand-footer {
+/* The residual footer must never be hidden. It lives in the sidebar on
+   desktop; where the sidebar is collapsed or an off-canvas drawer (<=900px)
+   the copy at the end of the main content takes over, so exactly one is
+   visible at any time. */
+.content-footer {
   display: none;
+  padding: 18px 26px 26px;
+  margin-top: 0;
+}
+
+.sidebar-collapsed .sidebar .brand-footer {
+  display: none;
+}
+
+.sidebar-collapsed .content-footer {
+  display: block;
+}
+
+/* License banner is a sibling of the app shell, so it is not offset by
+   .content. Mirror the shell's --sidebar-width on :root (only the product
+   shell has a sidebar; /backoffice pages render the banner unoffset). */
+:root {
+  --sidebar-width: 260px;
+}
+
+:root:has(.app-shell.sidebar-collapsed) {
+  --sidebar-width: 76px;
+}
+
+:root:has(.app-shell) .license-banner {
+  margin: 16px 26px 0 calc(var(--sidebar-width) + 26px);
+}
+
+@media (max-width: 900px) {
+  .content-footer {
+    display: block;
+    padding: 18px 14px 24px;
+  }
+
+  .sidebar .brand-footer {
+    display: none;
+  }
+
+  :root,
+  :root:has(.app-shell.sidebar-collapsed) {
+    --sidebar-width: 0px;
+  }
+
+  :root:has(.app-shell) .license-banner {
+    margin: 12px 14px 0;
+  }
 }
 
 .standalone-footer {
@@ -1448,6 +1497,25 @@ html[data-presentation-mode="active"]
 .daily-bar.real {
   fill: var(--mint);
   background: var(--mint);
+}
+
+/* The number opens the exact Leads list behind it. */
+.kpi-number-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.kpi-number-link:hover,
+.kpi-number-link:focus-visible {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
+}
+
+.metric-card small a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .daily-comparison-legend strong {
@@ -11299,6 +11367,28 @@ button.meta-manual-entry[aria-expanded="true"] {
   border-top: 1px dashed var(--border);
 }
 
+.meta-palmup-connect {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.meta-palmup-connect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.meta-palmup-connect .button {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
 .meta-direct-asset-entry > div {
   display: grid;
   min-width: 0;
@@ -15239,4 +15329,771 @@ button.meta-manual-entry[aria-expanded="true"] {
 
 .template-version-current {
   margin: 0;
+}
+
+.kommo-audit-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.kommo-audit-list,
+.kommo-audit-stages,
+.kommo-audit-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kommo-audit-list {
+  display: grid;
+  gap: 10px;
+}
+
+.kommo-audit-event {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.kommo-audit-event p {
+  margin: 0;
+}
+
+.kommo-audit-event-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.kommo-audit-stages,
+.kommo-audit-results {
+  display: grid;
+  gap: 4px;
+}
+
+.kommo-audit-stages li[data-state="unknown"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.kommo-conversion-panel .provider-conversion-rule-title,
+.kommo-conversion-panel .provider-conversion-heading,
+.kommo-conversion-panel .provider-conversion-heading-actions {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.kommo-conversion-panel .provider-conversion-rule-title > strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.kommo-conversion-panel .event-chip,
+.kommo-audit-event .event-chip {
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 14px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.kommo-conversion-panel .event-chip::before,
+.kommo-audit-event .event-chip::before {
+  flex: none;
+}
+
+@media (max-width: 700px) {
+  .kommo-audit-event {
+    padding: 10px;
+  }
+
+  .kommo-conversion-panel .provider-conversion-heading-actions {
+    width: 100%;
+  }
+
+  .kommo-conversion-panel .provider-conversion-rule-actions {
+    flex-wrap: wrap;
+  }
+}
+
+/* Pipedrive CRM panel inside the Integrations hub modal */
+.provider-conversion-inline-confirm {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--mint);
+  background: rgba(18, 184, 132, 0.06);
+}
+
+.provider-conversion-inline-confirm > span {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.pipedrive-delivery {
+  overflow-wrap: anywhere;
+}
+
+.provider-conversion-rule-title.pipedrive-title-row {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.pipedrive-production-gate {
+  display: grid;
+  grid-column: 1 / -1;
+  min-width: 0;
+  gap: 6px;
+  padding: 10px 12px;
+  border-left: 3px solid rgba(142, 173, 164, 0.4);
+  background: rgba(142, 173, 164, 0.05);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.pipedrive-readiness {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pipedrive-readiness li {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+/* Long badges ("Conferido a cada movimento") wrap inside their column
+   instead of overlapping the requirement text. */
+.pipedrive-readiness li > .event-chip {
+  justify-self: start;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.pipedrive-readiness-label {
+  min-width: 0;
+  padding-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.pipedrive-conversion-panel .pipedrive-connection-card > .provider-conversion-rule-list {
+  grid-column: 1 / -1;
+}
+
+/* The edit form sits inside the rule's <details>, whose generic
+   `> form` padding would otherwise flatten the builder card: keep the
+   same inner spacing as the Nova regra form on desktop (mobile unchanged). */
+@media (min-width: 701px) {
+  .pipedrive-conversion-panel .provider-conversion-rule-scope > form.provider-conversion-builder {
+    gap: 18px;
+    margin-bottom: 12px;
+    padding: 18px 16px;
+  }
+}
+
+@media (min-width: 981px) {
+  .pipedrive-conversion-panel .pipedrive-rule-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr) minmax(0, 1fr);
+  }
+}
+
+.pipedrive-conversion-panel .provider-conversion-rule-title,
+.pipedrive-conversion-panel .provider-conversion-heading,
+.pipedrive-conversion-panel .provider-conversion-heading-actions {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.pipedrive-conversion-panel .provider-conversion-rule-title > strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.pipedrive-conversion-panel .event-chip {
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 14px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.pipedrive-conversion-panel .event-chip::before {
+  flex: none;
+}
+
+.pipedrive-conversion-panel .provider-conversion-secret input {
+  min-width: 0;
+}
+
+@media (max-width: 700px) {
+  .pipedrive-readiness li {
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+  }
+
+  .pipedrive-conversion-panel .provider-conversion-heading-actions {
+    width: 100%;
+  }
+
+  .pipedrive-conversion-panel .provider-conversion-rule-actions {
+    flex-wrap: wrap;
+  }
+
+  .pipedrive-conversion-panel .provider-conversion-inline-confirm {
+    flex-wrap: wrap;
+  }
+}
+
+/* Fase 4b: Unnichat (número do cliente, modo de roteamento, passo a passo). */
+.inbound-webhook-create.has-phone {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.inbound-webhook-create .button,
+.unnichat-setup .button {
+  gap: 8px;
+}
+
+.inbound-webhook-create.has-phone > .button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.inbound-webhook-create .field-help {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.inbound-readiness-destination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.inbound-readiness-routing {
+  margin: 0;
+  font-size: 12px;
+}
+
+.inbound-routing-mode {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.inbound-routing-mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.inbound-routing-mode-options legend {
+  margin-bottom: 8px;
+  padding: 0;
+}
+
+.inbound-routing-mode-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.inbound-routing-mode p {
+  margin: 0;
+}
+
+.inbound-routing-mode-inherit {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.unnichat-setup {
+  min-width: 0;
+}
+
+.unnichat-setup .payload-block {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+@media (max-width: 700px) {
+  .inbound-webhook-create.has-phone {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inbound-routing-mode-options {
+    flex-direction: column;
+  }
+}
+
+.currency-badge {
+  min-height: 22px;
+  padding: 3px 7px;
+  color: var(--cyan);
+  letter-spacing: 0.04em;
+}
+
+.settings-currency-domain .currency-settings-panel {
+  display: grid;
+  gap: 22px;
+  padding: 18px;
+}
+
+.currency-settings-block {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(220px, 320px);
+  align-items: start;
+  gap: 14px;
+}
+
+.currency-settings-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.currency-settings-copy small {
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.currency-settings-form {
+  display: grid;
+  gap: 10px;
+}
+
+.currency-settings-form .action-note {
+  margin-top: 0;
+  line-height: 1.45;
+}
+
+.currency-settings-readonly {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.currency-settings-readonly small {
+  color: var(--ink-muted);
+}
+
+.currency-settings-accounts {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.currency-accounts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.currency-accounts-table th,
+.currency-accounts-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.currency-accounts-table td small {
+  display: block;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.currency-accounts-table tr.inactive td {
+  opacity: 0.6;
+}
+
+.currency-unsupported {
+  margin-left: 8px;
+}
+
+.currency-account-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.currency-account-form select {
+  min-width: 180px;
+}
+
+@media (max-width: 760px) {
+  .currency-settings-block {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .currency-settings-block .settings-automation-icon {
+    display: none;
+  }
+
+  .currency-accounts-table {
+    min-width: 0;
+  }
+
+  .currency-accounts-table thead {
+    display: none;
+  }
+
+  .currency-accounts-table,
+  .currency-accounts-table tbody,
+  .currency-accounts-table tr,
+  .currency-accounts-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .currency-accounts-table tr {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .currency-accounts-table td {
+    padding: 6px 4px;
+    border-bottom: 0;
+  }
+
+  .currency-accounts-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    color: var(--ink-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .currency-account-form select {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+}
+
+/* Relatórios por moeda: totais por moeda, "sem cotação" e filtro de contas de anúncio. */
+.currency-kpi-groups {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.currency-kpi-groups-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+
+.currency-kpi-groups-heading small {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.currency-kpi-group-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.currency-kpi-group {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+    var(--surface);
+}
+
+.currency-kpi-group > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.currency-kpi-group > header strong {
+  font-family: var(--font-display);
+  font-size: 15px;
+}
+
+.currency-kpi-group dl {
+  display: grid;
+  gap: 10px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin: 0;
+}
+
+.currency-kpi-group dt {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.currency-kpi-group dd {
+  margin: 4px 0 0;
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.currency-kpi-group dd.currency-roas-missing {
+  color: var(--amber);
+  font-size: 15px;
+}
+
+.currency-rate-missing {
+  min-height: 22px;
+  padding: 3px 8px;
+}
+
+.currency-unconverted-note {
+  margin: 0;
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.currency-unconverted-note span {
+  color: var(--ink-muted);
+}
+
+.report-rate-missing {
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.performance-table td .report-unconverted {
+  display: block;
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.report-results-overview .currency-kpi-groups,
+.report-results-overview .currency-unconverted-note {
+  margin-top: 12px;
+}
+
+.overview-page .currency-kpi-groups {
+  margin-block: 4px;
+}
+
+.ad-account-filter {
+  position: relative;
+  min-width: 0;
+}
+
+.ad-account-filter-details {
+  position: relative;
+  min-width: 0;
+}
+
+.ad-account-filter-trigger {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 10px 34px 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%),
+    linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+    rgba(5, 8, 7, 0.84);
+  background-position:
+    calc(100% - 17px) 17px,
+    calc(100% - 12px) 17px,
+    0 0,
+    0 0;
+  background-repeat: no-repeat;
+  background-size:
+    5px 5px,
+    5px 5px,
+    auto,
+    auto;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 750;
+  list-style: none;
+}
+
+.ad-account-filter-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.ad-account-filter-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ad-account-filter-details[open] > .ad-account-filter-trigger {
+  border-color: rgba(66, 240, 168, 0.72);
+  box-shadow: 0 0 0 3px rgba(18, 184, 132, 0.16);
+}
+
+.ad-account-filter-panel {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 8px;
+  width: max(100%, 280px);
+  max-width: min(92vw, 380px);
+  padding: 8px;
+  border: 1px solid rgba(66, 240, 168, 0.34);
+  border-radius: 8px;
+  background: var(--graphite-900);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.38);
+}
+
+.ad-account-filter-panel ul {
+  display: grid;
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.ad-account-filter-panel li + li {
+  border-top: 1px solid var(--border);
+}
+
+.ad-account-filter-panel label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ad-account-filter-panel label:hover {
+  background: rgba(18, 184, 132, 0.12);
+}
+
+.ad-account-filter-panel input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  min-height: 0;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  accent-color: var(--mint, #42f0a8);
+}
+
+.ad-account-filter-name {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ad-account-filter-name strong,
+.ad-account-filter-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ad-account-filter-name strong {
+  font-size: 13px;
+}
+
+.ad-account-filter-name small {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.ad-account-filter-badge {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--cyan);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.ad-account-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.report-filter-primary .ad-account-filter-trigger {
+  background-color: rgba(5, 8, 7, 0.84);
+}
+
+@media (max-width: 760px) {
+  .currency-kpi-group-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .currency-kpi-group dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ad-account-filter-panel {
+    width: 100%;
+    max-width: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .overview-ad-account-filter {
+    grid-column: 1 / -1;
+  }
 }

@@ -1,8 +1,11 @@
+import { inboundParserProductionEligible } from "./inbound-webhook-parser-eligibility";
 import { createHash } from "node:crypto";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import type {
   ProviderConversionDecisionDto,
+  ProviderConversionCatalogDto,
+  ProviderConversionDecisionCatalogSnapshotDto,
   ProviderConversionDecisionRuleSnapshotDto,
 } from "@wpptrack/shared";
 import {
@@ -30,6 +33,11 @@ import {
   type ProviderConversionTechnicalDisposition,
 } from "../conversion-rules/provider-conversion-orchestrator.service";
 import { ProviderConversionPaidLeadResolver } from "../conversion-rules/provider-conversion-paid-lead-resolver.service";
+import {
+  providerRuleCandidateWhere,
+  providerRuleScope,
+  resolveApplicableProviderRules,
+} from "../conversion-rules/provider-rule-scope";
 import { InboundWebhookProductionQueueService } from "./inbound-webhook-production-queue.service";
 import {
   UazapiConversionBridgeService,
@@ -48,11 +56,47 @@ const ruleInclude = {
     },
   },
   parserRelease: true,
+  catalog: {
+    include: {
+      attributes: { orderBy: { position: "asc" } },
+      variants: { orderBy: { createdAt: "asc" } },
+    },
+  },
 } satisfies Prisma.ProviderConversionRuleConfigInclude;
 
 type Rule = Prisma.ProviderConversionRuleConfigGetPayload<{
   include: typeof ruleInclude;
 }>;
+
+/** Connection whose live state gates production (the rule's, or the bridge's). */
+type GateConnection = {
+  status: string;
+  removedAt: Date | null;
+  parserReleaseId: string;
+  parserRelease: { provider: string; version: string; status: string };
+};
+
+type GatedChannel = {
+  status: string;
+  productionActivatedAt: Date | null;
+  /** Connection of the bridged channel: gates rules spanning connections. */
+  connection?: GateConnection | null;
+};
+
+const gatedChannelSelect = {
+  status: true,
+  productionActivatedAt: true,
+  connection: {
+    select: {
+      status: true,
+      removedAt: true,
+      parserReleaseId: true,
+      parserRelease: {
+        select: { provider: true, version: true, status: true },
+      },
+    },
+  },
+} satisfies Prisma.InboundWebhookChannelSelect;
 
 export type UazapiTeamMessageInput = {
   workspaceId: string;
@@ -156,7 +200,7 @@ export class UazapiProviderConversionService {
 
     const channel = await this.prisma.inboundWebhookChannel.findFirst({
       where: { id: bridged.channelId, workspaceId: input.workspaceId },
-      select: { status: true, productionActivatedAt: true },
+      select: gatedChannelSelect,
     });
     if (!channel) {
       return { evaluated: false, eligibleExecutionId: null };
@@ -174,11 +218,14 @@ export class UazapiProviderConversionService {
     let eligibleExecutionId: string | null = null;
 
     for (const rule of rules) {
-      const ruleSnapshot = this.ruleSnapshot(rule);
+      const ruleSnapshot = this.ruleSnapshot(
+        rule,
+        this.teamMessageTriggerType(rule),
+      );
       const decisionInput: ProviderConversionDecisionInput = {
         parserVersion: PARSER_VERSION,
         rule: ruleSnapshot,
-        catalog: null,
+        catalog: this.catalogSnapshot(rule),
         leadResolution,
         contactIdentityHash: hashPhoneIdentity(phone) ?? null,
         occurrence: {
@@ -301,7 +348,7 @@ export class UazapiProviderConversionService {
             id: persistedDecision.channelId,
             workspaceId: persistedDecision.workspaceId,
           },
-          select: { status: true, productionActivatedAt: true },
+          select: gatedChannelSelect,
         })
       : null;
 
@@ -483,7 +530,7 @@ export class UazapiProviderConversionService {
 
     const channel = await this.prisma.inboundWebhookChannel.findFirst({
       where: { id: bridged.channelId, workspaceId: input.workspaceId },
-      select: { status: true, productionActivatedAt: true },
+      select: gatedChannelSelect,
     });
     if (!channel) return { evaluated: false, eligibleExecutionId: null };
 
@@ -565,7 +612,7 @@ export class UazapiProviderConversionService {
     persistedDecision: PersistedProviderConversionDecision;
     config: ReturnType<typeof parseInboundWebhooksConfig>;
     rule: Rule;
-    channel: { status: string; productionActivatedAt: Date | null } | null;
+    channel: GatedChannel | null;
     occurredAt: Date;
   }): Promise<ProviderConversionOrchestrationResult> {
     const plan = this.dispositionPlan(input);
@@ -587,7 +634,7 @@ export class UazapiProviderConversionService {
     persistedDecision: PersistedProviderConversionDecision;
     config: ReturnType<typeof parseInboundWebhooksConfig>;
     rule: Rule;
-    channel: { status: string; productionActivatedAt: Date | null } | null;
+    channel: GatedChannel | null;
     occurredAt: Date;
     manualRecovery?: boolean;
   }): {
@@ -621,28 +668,57 @@ export class UazapiProviderConversionService {
     };
   }
 
+  /**
+   * Rules bound to the bridge connection (every rule created before the
+   * workspace scope, loaded as before) or unbound; scoped to this channel or
+   * "all numbers". Precedence: a specific rule of the same origin/event
+   * replaces every global rule on this channel (and on every channel of the
+   * same phone), and a global rule runs once per phone.
+   */
   private async loadRules(
     workspaceId: string,
     connectionId: string,
     channelId: string,
-    triggerType: "message_phrase" | "provider_automation" = "message_phrase",
+    triggerType: "team_message" | "provider_automation" = "team_message",
   ): Promise<Rule[]> {
-    return this.prisma.providerConversionRuleConfig.findMany({
-      where: {
-        workspaceId,
-        connectionId,
-        removedAt: null,
-        conversionRule: {
-          active: true,
-          triggerType,
+    const candidates = (await this.prisma.providerConversionRuleConfig.findMany(
+      {
+        where: {
+          workspaceId,
+          removedAt: null,
+          conversionRule: {
+            active: true,
+            // Team messages run phrase AND structured catalog rules (same as
+            // the Umbler observation and the SaaS).
+            triggerType:
+              triggerType === "team_message"
+                ? { in: ["structured_catalog", "message_phrase"] }
+                : { equals: triggerType },
+          },
+          ...providerRuleCandidateWhere({
+            connectionId,
+            channelIds: [channelId],
+          }),
         },
-        channels: {
-          some: { channelId },
-        },
+        include: ruleInclude,
+        orderBy: { createdAt: "asc" },
       },
-      include: ruleInclude,
-      orderBy: { createdAt: "asc" },
-    });
+    )) as Rule[];
+    // The query already proved that every specific candidate is scoped to
+    // this channel (`channels: { some: { channelId } }`).
+    return (
+      await resolveApplicableProviderRules(this.prisma, {
+        workspaceId,
+        rules: candidates.map((rule) => ({
+          ...rule,
+          channels:
+            providerRuleScope(rule) === "specific_numbers"
+              ? [{ channelId }]
+              : [],
+        })),
+        channel: { id: channelId, connectionId, provider: "uazapi" },
+      })
+    ).applicable;
   }
 
   private async ensureDelivery(input: {
@@ -719,7 +795,7 @@ export class UazapiProviderConversionService {
     decisionMode: "observation" | "production";
     reasonCode: string;
     rule: Rule;
-    channel: { status: string; productionActivatedAt: Date | null } | null;
+    channel: GatedChannel | null;
     occurredAt: Date;
     manualRecovery: boolean;
   }): ProviderConversionTechnicalDisposition {
@@ -765,22 +841,32 @@ export class UazapiProviderConversionService {
    */
   private productionContextBlock(input: {
     rule: Rule;
-    channel: { status: string; productionActivatedAt: Date | null } | null;
+    channel: GatedChannel | null;
   }): string | null {
     const { rule, channel } = input;
-    if (rule.parserRelease.status !== "certified") {
+    // A rule spanning connections has no connection/parser of its own: the
+    // bridged channel's connection is the one that produced the event.
+    const connection = rule.connection ?? channel?.connection ?? null;
+    if (!connection) {
+      return "channel_unresolved";
+    }
+    const ruleParserRelease = rule.parserRelease ?? connection.parserRelease;
+    if (!inboundParserProductionEligible(ruleParserRelease)) {
       return "rule_parser_not_certified";
     }
-    if (rule.connection.parserRelease.status !== "certified") {
+    if (!inboundParserProductionEligible(connection.parserRelease)) {
       return "connection_parser_not_certified";
     }
-    if (rule.parserReleaseId !== rule.connection.parserReleaseId) {
+    if (
+      rule.parserReleaseId !== null &&
+      rule.parserReleaseId !== connection.parserReleaseId
+    ) {
       return "parser_release_mismatch";
     }
-    if (rule.connection.removedAt !== null) {
+    if (connection.removedAt !== null) {
       return "connection_removed";
     }
-    if (rule.connection.status !== "production") {
+    if (connection.status !== "production") {
       return "connection_not_production";
     }
     if (!channel) {
@@ -792,9 +878,71 @@ export class UazapiProviderConversionService {
     return null;
   }
 
+  private teamMessageTriggerType(
+    rule: Rule,
+  ): "message_phrase" | "structured_catalog" {
+    return rule.conversionRule.triggerType === "structured_catalog"
+      ? "structured_catalog"
+      : "message_phrase";
+  }
+
+  private catalogSnapshot(
+    rule: Rule,
+  ): ProviderConversionDecisionCatalogSnapshotDto | null {
+    if (
+      rule.conversionRule.triggerType !== "structured_catalog" ||
+      !rule.catalog
+    ) {
+      return null;
+    }
+    const catalog = this.catalogDto(rule);
+    const version = createHash("sha256")
+      .update(JSON.stringify(catalog), "utf8")
+      .digest("hex");
+    return { version: `catalog-v1:${version}`, catalog };
+  }
+
+  private catalogDto(rule: Rule): ProviderConversionCatalogDto {
+    const catalog = rule.catalog;
+    if (!catalog) {
+      throw new Error("Structured catalog rule is missing its catalog");
+    }
+    const strings = (value: Prisma.JsonValue): string[] =>
+      Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string")
+        : [];
+    return {
+      id: catalog.id,
+      name: catalog.name,
+      productName: catalog.productName,
+      currency: catalog.currency,
+      active: catalog.active,
+      attributes: catalog.attributes.map((attribute) => ({
+        id: attribute.id,
+        position: attribute.position,
+        key: attribute.key,
+        label: attribute.label,
+      })),
+      variants: catalog.variants.map((variant) => ({
+        id: variant.id,
+        normalizedKey: variant.normalizedKey,
+        attributeValues: strings(variant.attributeValues),
+        aliases: Array.isArray(variant.aliases)
+          ? variant.aliases.map((item) => strings(item))
+          : [],
+        valueCents: variant.valueCents,
+        contentName: variant.contentName,
+        active: variant.active,
+      })),
+    };
+  }
+
   private ruleSnapshot(
     rule: Rule,
-    triggerType: "message_phrase" | "provider_automation" = "message_phrase",
+    triggerType:
+      | "message_phrase"
+      | "structured_catalog"
+      | "provider_automation" = "message_phrase",
   ): ProviderConversionDecisionRuleSnapshotDto {
     const eventName = this.eventName(rule);
     const messagePhrase = readMessagePhraseConfig(
@@ -811,7 +959,9 @@ export class UazapiProviderConversionService {
       authorScope: rule.messageAuthorScope,
       triggerPhrases: [
         ...rule.messageTriggerPhrases,
-        ...(triggerType === "provider_automation"
+        // Label ids are local to one WhatsApp instance: a rule spanning
+        // instances (no connection binding) matches labels by name only.
+        ...(triggerType === "provider_automation" && rule.connectionId !== null
           ? this.storedLabels(rule.conversionRule.defaultItems).flatMap(
               (label) => label.matchKeys,
             )
@@ -820,8 +970,10 @@ export class UazapiProviderConversionService {
       defaultValueCents: rule.conversionRule.defaultValueCents,
       defaultCurrency: rule.conversionRule.defaultCurrency,
       defaultContentName: rule.conversionRule.defaultContentName,
-      valueMode: messagePhrase.valueMode,
-      exampleMessage: messagePhrase.exampleMessage,
+      valueMode:
+        triggerType === "message_phrase" ? messagePhrase.valueMode : "fixed",
+      exampleMessage:
+        triggerType === "message_phrase" ? messagePhrase.exampleMessage : null,
       version: `rule-v1:${rule.updatedAt.getTime()}:${rule.conversionRule.updatedAt.getTime()}`,
     };
   }
@@ -911,29 +1063,35 @@ export class UazapiProviderConversionService {
     catalog: Array<{ name: string; keys: string[] }>,
   ): { id: string; name: string; matchKeys: string[] } | null {
     const stored = this.storedLabels(rule.conversionRule.defaultItems);
+    // Label ids are local to one WhatsApp instance ("3" can be another label
+    // on another number), so a rule spanning instances matches by name only.
+    const idMatching = rule.connectionId !== null;
     for (const id of newIds) {
       const keys = this.labelKeys(id);
       const catalogName = catalog.find((label) =>
         label.keys.some((key) => keys.includes(key)),
       )?.name;
       const configured =
-        stored.find((label) =>
-          label.matchKeys.some((key) => keys.includes(key)),
-        ) ??
+        (idMatching
+          ? stored.find((label) =>
+              label.matchKeys.some((key) => keys.includes(key)),
+            )
+          : undefined) ??
         (catalogName
           ? stored.find((label) => this.sameName(label.name, catalogName))
           : undefined);
-      if (
-        configured ||
-        (catalogName &&
-          rule.messageTriggerPhrases.some((phrase) =>
-            this.sameName(phrase, catalogName),
-          ))
-      ) {
+      const phrase = catalogName
+        ? rule.messageTriggerPhrases.find((candidate) =>
+            this.sameName(candidate, catalogName),
+          )
+        : undefined;
+      if (configured || phrase) {
         return {
           id,
           name: configured?.name ?? catalogName ?? id,
-          matchKeys: keys,
+          // The engine intersects these with the rule trigger phrases: ids
+          // for a bound rule (unchanged), the configured name otherwise.
+          matchKeys: idMatching ? keys : [phrase ?? configured!.name],
         };
       }
     }

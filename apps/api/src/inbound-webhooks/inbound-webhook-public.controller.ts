@@ -16,6 +16,7 @@ import {
 import { InboundWebhookIngestionService } from "./inbound-webhook-ingestion.service";
 import { InboundConversionAutomationIngestionService } from "./inbound-conversion-automation-ingestion.service";
 import { InboundWebhookMetaCloudVerificationService } from "./inbound-webhook-meta-cloud-verification.service";
+import { IntegrationEndpointsService } from "./integration-endpoints.service";
 
 @Controller("webhooks/inbound")
 export class InboundWebhookPublicController {
@@ -28,6 +29,8 @@ export class InboundWebhookPublicController {
     private readonly conversionAutomationIngestion: InboundConversionAutomationIngestionService,
     @Inject(InboundWebhookMetaCloudVerificationService)
     private readonly metaCloudVerification: InboundWebhookMetaCloudVerificationService,
+    @Inject(IntegrationEndpointsService)
+    private readonly integrationEndpoints: IntegrationEndpointsService,
   ) {}
 
   @Get(":connectionId")
@@ -47,6 +50,29 @@ export class InboundWebhookPublicController {
     }
 
     return challenge;
+  }
+
+  /**
+   * Fase 5.3: URL única da plataforma de venda (Payt) ou URL por evento
+   * (Unnichat/Umbler) do workspace. O roteador escolhe a regra dona e entrega
+   * o callback ao mesmo processamento da URL da regra.
+   */
+  @Post("integrations/:endpointId")
+  @HttpCode(202)
+  async receiveIntegrationEndpoint(
+    @Param("endpointId") endpointId: string,
+    @Query("token") token: unknown,
+    @Headers("content-type") contentType: string | undefined,
+    @Headers("x-attempt") providerAttempt: unknown,
+    @RawBody() rawBody: Buffer | undefined,
+  ) {
+    return this.integrationEndpoints.ingest({
+      endpointId,
+      token,
+      contentType,
+      providerAttempt,
+      rawBody,
+    });
   }
 
   @Post("conversions/:endpointId")

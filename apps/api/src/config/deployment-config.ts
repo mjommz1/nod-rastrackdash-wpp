@@ -424,9 +424,45 @@ export function parseInboundWebhooksConfig(
   };
 }
 
+/**
+ * PIPEDRIVE_CRM_ENCRYPTION_KEY (optional): 32 random bytes in canonical
+ * base64 (`openssl rand -base64 32`), used only to seal Pipedrive API tokens.
+ * Returns null when it is unset or invalid; the Pipedrive service then refuses
+ * to connect. It must never reuse the Kommo key.
+ */
+export function pipedriveCrmEncryptionKey(env: Environment): Buffer | null {
+  const value = env.PIPEDRIVE_CRM_ENCRYPTION_KEY?.trim();
+  if (!value || !inboundWebhookEncryptionKeyPattern.test(value)) return null;
+  const key = Buffer.from(value, "base64");
+  if (key.length !== 32 || key.toString("base64") !== value) return null;
+  if (value === env.KOMMO_CRM_ENCRYPTION_KEY?.trim()) return null;
+  return key;
+}
+
+/**
+ * Boot check of the optional Pipedrive key: an installation without the
+ * variable boots exactly as before; a value that is set must be valid and
+ * different from KOMMO_CRM_ENCRYPTION_KEY.
+ */
+function validatePipedriveCrmEncryptionKey(env: Environment): void {
+  const value = env.PIPEDRIVE_CRM_ENCRYPTION_KEY?.trim();
+  if (!value) return;
+  if (value === env.KOMMO_CRM_ENCRYPTION_KEY?.trim())
+    invalid(
+      "PIPEDRIVE_CRM_ENCRYPTION_KEY",
+      "must differ from KOMMO_CRM_ENCRYPTION_KEY",
+    );
+  if (!pipedriveCrmEncryptionKey(env))
+    invalid(
+      "PIPEDRIVE_CRM_ENCRYPTION_KEY",
+      "expected a Base64-encoded 32-byte key (openssl rand -base64 32)",
+    );
+}
+
 export function parseDeploymentConfig(
   env: Environment = process.env,
 ): DeploymentConfig {
+  validatePipedriveCrmEncryptionKey(env);
   return {
     authGoogleEnabled: parseBoolean(
       "AUTH_GOOGLE_ENABLED",

@@ -1,13 +1,17 @@
 "use client";
 
-import type { MetaReportingAccountDto } from "@wpptrack/shared";
+import type { CurrencyCode, MetaReportingAccountDto } from "@wpptrack/shared";
 import { Filter, RotateCcw } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { AdAccountFilter } from "../../../components/ad-account-filter";
 import { usePresentationMode } from "../../../components/presentation-mode-toggle";
 
 type OverviewFiltersProps = {
-  adAccountId?: string;
+  /** Contas de anúncio selecionadas (na URL: `adAccountId` ou `adAccountIds`). */
+  adAccountIds?: string[];
+  /** Moeda efetiva por conta (correção manual, Meta, BRL). */
+  accountCurrencies?: Record<string, CurrencyCode>;
   businessId?: string;
   hasActiveFilter: boolean;
   reportingAccounts: MetaReportingAccountDto[];
@@ -26,7 +30,8 @@ function businessesFromAccounts(accounts: MetaReportingAccountDto[]) {
 }
 
 export function OverviewFilters({
-  adAccountId,
+  accountCurrencies,
+  adAccountIds,
   businessId,
   hasActiveFilter,
   reportingAccounts,
@@ -41,9 +46,10 @@ export function OverviewFilters({
   const [selectedBusinessId, setSelectedBusinessId] = useState(
     businessId ?? "",
   );
-  const [selectedAdAccountId, setSelectedAdAccountId] = useState(
-    adAccountId ?? "",
-  );
+  const appliedAdAccountIds = useMemo(() => adAccountIds ?? [], [adAccountIds]);
+  const appliedKey = appliedAdAccountIds.join(",");
+  const [selectedAdAccountIds, setSelectedAdAccountIds] =
+    useState<string[]>(appliedAdAccountIds);
   const accounts = useMemo(
     () =>
       selectedBusinessId
@@ -56,12 +62,12 @@ export function OverviewFilters({
 
   useEffect(() => {
     setSelectedBusinessId(businessId ?? "");
-    setSelectedAdAccountId(adAccountId ?? "");
-  }, [adAccountId, businessId]);
+    setSelectedAdAccountIds(appliedKey ? appliedKey.split(",") : []);
+  }, [appliedKey, businessId]);
 
   function handleBusinessChange(nextBusinessId: string) {
     setSelectedBusinessId(nextBusinessId);
-    setSelectedAdAccountId("");
+    setSelectedAdAccountIds([]);
   }
 
   const showBusinessFilter = businesses.length > 1;
@@ -119,36 +125,16 @@ export function OverviewFilters({
       ) : null}
 
       {showAccountFilter ? (
-        <label className="filter-field overview-scope-filter">
-          <span>Conta de anuncio</span>
-          {presentationMode ? (
-            <>
-              <input
-                type="hidden"
-                name="adAccountId"
-                value={selectedAdAccountId}
-              />
-              <span className="presentation-filter-placeholder">
-                Conta oculta
-              </span>
-            </>
-          ) : (
-            <select
-              name="adAccountId"
-              value={selectedAdAccountId}
-              onChange={(event) =>
-                setSelectedAdAccountId(event.currentTarget.value)
-              }
-            >
-              <option value="">Todas as contas</option>
-              {accounts.map((account) => (
-                <option key={account.id} value={account.adAccountId}>
-                  {account.adAccountName}
-                </option>
-              ))}
-            </select>
-          )}
-        </label>
+        <AdAccountFilter
+          accounts={accounts}
+          appliedValue={appliedAdAccountIds}
+          className="overview-ad-account-filter"
+          currencies={accountCurrencies}
+          label="Conta de anúncio"
+          onChange={setSelectedAdAccountIds}
+          presentationMode={presentationMode}
+          value={selectedAdAccountIds}
+        />
       ) : null}
 
       <div className="overview-filter-actions">

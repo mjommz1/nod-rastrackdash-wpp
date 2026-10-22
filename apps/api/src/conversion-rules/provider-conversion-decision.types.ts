@@ -1,4 +1,5 @@
 import type {
+  CurrencyCode,
   ProviderConversionDecisionCatalogSnapshotDto,
   ProviderConversionDecisionDto,
   ProviderConversionDecisionOccurrenceDto,
@@ -36,6 +37,8 @@ export type ProviderConversionMessageOccurrenceInput = OccurrenceIdentity & {
   eventName: ProviderConversionDecisionRuleSnapshotDto["eventName"];
   authorType: ProviderConversionDecisionOccurrenceDto["authorType"];
   messageText: string;
+  /** Workspace "Moeda das conversoes" for a price read from the message. */
+  fallbackCurrency?: CurrencyCode;
 };
 
 export type ProviderConversionAutomationOccurrenceInput = OccurrenceIdentity & {
@@ -43,6 +46,15 @@ export type ProviderConversionAutomationOccurrenceInput = OccurrenceIdentity & {
   eventName: ProviderConversionDecisionRuleSnapshotDto["eventName"];
   authorType: null;
   automation: string;
+  /** Sale value read from the callback (Payt); never invented. */
+  observedValueCents?: number;
+  /** Currency the sale/automation payload declares, when it declares one. */
+  observedCurrency?: CurrencyCode;
+  /**
+   * Workspace "Moeda das conversoes": used when neither the payload nor the
+   * rule names a currency (rule currency null = inherit). Absent = BRL.
+   */
+  fallbackCurrency?: CurrencyCode;
   labels?: string[];
   matchedLabel?: string;
 };

@@ -3,6 +3,7 @@ import { DataCrazyV1Parser } from "./data-crazy/data-crazy-v1.parser";
 import { GupshupV1Parser } from "./gupshup/gupshup-v1.parser";
 import { MetaCloudV1Parser } from "./meta-cloud/meta-cloud-v1.parser";
 import { UmblerV1Parser } from "./umbler/umbler-v1.parser";
+import { UnnichatV1Parser } from "./unnichat/unnichat-v1.parser";
 import { WahaV1Parser } from "./waha/waha-v1.parser";
 import { ZapiV1Parser } from "./zapi/zapi-v1.parser";
 
@@ -52,6 +53,7 @@ function defaultParsers(): InboundWebhookParser[] {
     new WahaV1Parser(),
     new ZapiV1Parser(),
     new DataCrazyV1Parser(),
+    new UnnichatV1Parser(),
   ];
 }
 

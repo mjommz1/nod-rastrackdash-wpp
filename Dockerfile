@@ -35,9 +35,28 @@ RUN --mount=type=cache,id=wpptrack-api-pnpm-store,target=/pnpm/store,sharing=loc
   && pnpm store add /tmp/prisma-client-6.19.3.tgz /tmp/prisma-cli-6.19.3.tgz \
   && pnpm install --frozen-lockfile --prefer-offline --filter @wpptrack/api...
 
-FROM deps AS build
+# Resolves the installed template commit (shown in /backoffice) from the
+# build context's git metadata, then drops that metadata. .dockerignore only
+# lets the read-only subset git needs in (HEAD, refs, objects, index, shallow);
+# never config/remotes/hooks/logs. Later stages copy from /src after `.git` is
+# removed, so neither history nor credentials reach the image. See
+# scripts/resolve-build-identity.mjs for the rules (unknown when unsure).
+FROM base AS source
+
+WORKDIR /src
 
 COPY . .
+
+# Optional fallback for builds without git metadata (archive/tarball). It never
+# overrides the commit read from a git checkout.
+ARG GIT_SHA=
+
+RUN GIT_SHA="${GIT_SHA}" node scripts/resolve-build-identity.mjs /src /identity/build-identity.json \
+  && rm -rf /src/.git
+
+FROM deps AS build
+
+COPY --from=source /src ./
 
 ENV DATABASE_URL="postgresql://postgres:postgres@localhost:5432/wpptrack"
 
@@ -49,12 +68,11 @@ FROM base AS runner
 
 WORKDIR /app
 
-ARG GIT_SHA=
-
 ENV NODE_ENV=production
-ENV GIT_SHA=${GIT_SHA}
 
 COPY --from=build /app ./
+# Read by the API (template-version BUILD_IDENTITY_FILE).
+COPY --from=source /identity/build-identity.json ./build-identity.json
 
 EXPOSE 3000
 

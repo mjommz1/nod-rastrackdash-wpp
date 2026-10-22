@@ -12,6 +12,7 @@ import {
   type InboundWebhookProviderDto,
 } from "@wpptrack/shared";
 import { revalidatePath } from "next/cache";
+import { licenseLockedMessageFor } from "../../../lib/license-locked-message";
 import { serverApiFetch } from "../../../lib/server-api";
 
 export type InboundWebhookOneTimeSecret = {
@@ -30,6 +31,8 @@ export type InboundWebhookActionResult = {
 const integrationsPath = "/integrations";
 const invalidFormMessage = "Revise os dados informados e tente novamente.";
 const connectionStatusOperationalErrors = new Set([
+  "Configure META_APP_SECRET do seu proprio app Meta no ambiente da API antes de enviar. Nao use o segredo PalmUP nem cole segredos no chat.",
+  "Certifique o parser antes de ativar o envio automatico. Esta versao da integracao nao e nativa validada ou foi retirada.",
   "Ative ao menos um canal validado antes da producao",
   "Certifique o parser antes de ativar o envio automatico",
   "Controle de vagas dos canais externos indisponivel",
@@ -37,6 +40,24 @@ const connectionStatusOperationalErrors = new Set([
   "Finalize o replay em andamento antes de ativar a producao",
   "Todas as vagas do pacote estao ocupadas",
   "Todo canal ativo precisa de uma rota Meta valida",
+  "Workspace sem contrato com acesso ativo",
+]);
+const connectionCreateOperationalErrors = new Set([
+  "Conexões Unnichat exigem o número de WhatsApp do cliente",
+]);
+const providerObservationUnavailableApiMessage =
+  "Versao de observacao do provedor indisponivel";
+
+function providerObservationUnavailableMessage(provider: string): string {
+  const name = provider === "unnichat" ? "O Unnichat" : "Este provedor";
+
+  return `${name} ainda não está liberado nesta instalação: rode as migrations da API e tente de novo.`;
+}
+const channelStatusOperationalErrors = new Set([
+  "Configure a Meta deste número (página e pixel do workspace ou rotas próprias) antes de ativar o canal",
+  "Configure uma rota Meta valida antes de ativar o canal",
+  "Controle de vagas dos canais externos indisponivel",
+  "Todas as vagas do pacote estao ocupadas",
   "Workspace sem contrato com acesso ativo",
 ]);
 
@@ -60,13 +81,25 @@ function oneTimeSecretForProvider(input: {
 export async function createInboundWebhookConnectionAction(
   formData: FormData,
 ): Promise<InboundWebhookActionResult> {
-  const input = inboundWebhookConnectionCreateInputSchema.safeParse({
-    provider: formText(formData, "provider"),
-    displayName: formText(formData, "displayName"),
-  });
+  const provider = formText(formData, "provider");
+  // Unnichat: o webhook de entrada não traz o canal, então a conexão nasce
+  // com o número de WhatsApp do cliente (nunca o telefone do lead).
+  const input = inboundWebhookConnectionCreateInputSchema.safeParse(
+    provider === "unnichat"
+      ? {
+          provider,
+          displayName: formText(formData, "displayName"),
+          connectedPhone: formText(formData, "connectedPhone"),
+        }
+      : { provider, displayName: formText(formData, "displayName") },
+  );
 
   if (!input.success) {
-    return failure(invalidFormMessage);
+    return failure(
+      provider === "unnichat" && formText(formData, "displayName")
+        ? "Informe o número de WhatsApp do cliente atendido pelo Unnichat, com DDI e DDD."
+        : invalidFormMessage,
+    );
   }
 
   try {
@@ -81,7 +114,7 @@ export async function createInboundWebhookConnectionAction(
       inboundWebhookConnectionCreateResultSchema.safeParse(response);
 
     if (!result.success) {
-      return failure("Nao foi possivel criar a conexao de webhook.");
+      return failure("Não foi possível criar a conexão de webhook.");
     }
 
     revalidatePath(integrationsPath);
@@ -96,8 +129,21 @@ export async function createInboundWebhookConnectionAction(
         secret: result.data.secret,
       }),
     };
-  } catch {
-    return failure("Nao foi possivel criar a conexao de webhook.");
+  } catch (error) {
+    if (
+      !licenseLockedMessageFor(error) &&
+      error instanceof Error &&
+      error.message.trim() === providerObservationUnavailableApiMessage
+    ) {
+      return failure(
+        providerObservationUnavailableMessage(String(input.data.provider)),
+      );
+    }
+
+    return failure(
+      knownOperationalError(error, connectionCreateOperationalErrors) ??
+        "Não foi possível criar a conexão de webhook.",
+    );
   }
 }
 
@@ -137,8 +183,8 @@ export async function rotateInboundWebhookSecretAction(
         secret: result.data.secret,
       }),
     };
-  } catch {
-    return failure("Nao foi possivel rotacionar o segredo desta conexao.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel rotacionar o segredo desta conexao.");
   }
 }
 
@@ -200,8 +246,8 @@ export async function removeInboundWebhookConnectionAction(
       ok: true,
       message: "Conexao removida. O historico de observacao foi preservado.",
     };
-  } catch {
-    return failure("Nao foi possivel remover esta conexao.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel remover esta conexao.");
   }
 }
 
@@ -233,8 +279,8 @@ export async function createInboundWebhookChannelAction(
       message:
         "Canal cadastrado. Ja e possivel criar regras de conversao para ele antes de qualquer mensagem chegar.",
     };
-  } catch {
-    return failure("Nao foi possivel cadastrar o canal.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel cadastrar o canal.");
   }
 }
 
@@ -267,8 +313,11 @@ export async function setInboundWebhookChannelStatusAction(
           ? "Canal pausado. Os demais canais continuam inalterados."
           : "Canal habilitado para envio quando a conexao estiver em producao.",
     };
-  } catch {
-    return failure("Nao foi possivel alterar o status deste canal.");
+  } catch (error) {
+    return failure(
+      knownOperationalError(error, channelStatusOperationalErrors) ??
+        "Nao foi possivel alterar o status deste canal.",
+    );
   }
 }
 
@@ -296,8 +345,10 @@ export async function saveInboundWebhookChannelRoutesAction(
       ok: true,
       message: "Rotas do canal salvas e validadas.",
     };
-  } catch {
-    return failure("Nao foi possivel salvar as rotas deste canal.");
+  } catch (error) {
+    return failure(
+      knownRouteError(error) ?? "Nao foi possivel salvar as rotas deste canal.",
+    );
   }
 }
 
@@ -321,8 +372,8 @@ export async function removeInboundWebhookChannelRouteAction(
       ok: true,
       message: "Rota removida do canal.",
     };
-  } catch {
-    return failure("Nao foi possivel remover esta rota.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel remover esta rota.");
   }
 }
 
@@ -346,20 +397,71 @@ function channelRoutesInput(
   formData: FormData,
 ): InboundWebhookChannelRoutesUpdateInputDto | null {
   const value = formText(formData, "routes");
+  const routingMode = formText(formData, "routingMode");
 
   if (!value || value.length > 100_000) {
     return null;
   }
 
   try {
+    // O modo só existe para o Unnichat: os demais provedores não o enviam
+    // (a API recusa o campo).
     const input = inboundWebhookChannelRoutesUpdateInputSchema.safeParse({
       routes: JSON.parse(value),
+      ...(routingMode ? { routingMode } : {}),
     });
 
-    return input.success ? input.data : null;
+    if (
+      !input.success ||
+      (input.data.routingMode === "inherit_workspace" &&
+        input.data.routes.length > 0)
+    ) {
+      return null;
+    }
+
+    return input.data;
   } catch {
     return null;
   }
+}
+
+// Recusas 409 do modo de roteamento (Unnichat) em português claro.
+const routeConflictMessages: ReadonlyArray<readonly [string, string]> = [
+  [
+    "Modo de herança disponível apenas para Unnichat",
+    "O modo “Herdar do workspace” existe só para números do Unnichat.",
+  ],
+  [
+    "Informe o modo de roteamento",
+    "Escolha o modo de roteamento deste número (Herdar do workspace ou Configurar neste número) e salve.",
+  ],
+  [
+    "Herança não aceita rotas locais",
+    "No modo “Herdar do workspace” o número não tem rotas próprias. Remova as rotas ou escolha “Configurar neste número”.",
+  ],
+  [
+    "Informe routingMode channel_override",
+    "Para salvar rotas próprias, escolha “Configurar neste número”.",
+  ],
+];
+
+function knownRouteError(error: unknown): string | null {
+  const licenseMessage = licenseLockedMessageFor(error);
+
+  if (licenseMessage) {
+    return licenseMessage;
+  }
+
+  if (!(error instanceof Error)) {
+    return null;
+  }
+
+  const message = error.message.trim();
+
+  return (
+    routeConflictMessages.find(([prefix]) => message.startsWith(prefix))?.[1] ??
+    null
+  );
 }
 
 async function deleteApiResource(path: string): Promise<void> {
@@ -374,6 +476,12 @@ function knownOperationalError(
   error: unknown,
   allowedMessages: ReadonlySet<string>,
 ): string | null {
+  const licenseMessage = licenseLockedMessageFor(error);
+
+  if (licenseMessage) {
+    return licenseMessage;
+  }
+
   if (!(error instanceof Error)) {
     return null;
   }

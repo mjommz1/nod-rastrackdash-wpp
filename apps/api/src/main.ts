@@ -5,7 +5,7 @@ import { parseDeploymentConfig } from "./config/deployment-config";
 import { getApiPort } from "./config/env";
 import { loadLocalEnv } from "./config/load-env";
 import { PlatformAdminEnvBootstrapService } from "./auth/platform-admin-env-bootstrap.service";
-import { INBOUND_WEBHOOK_BODY_LIMIT } from "./inbound-webhooks/inbound-webhook-limits";
+import { configureInboundWebhookBodyParser } from "./inbound-webhooks/inbound-webhook-body-parser";
 import { LicenseAutoActivationService } from "./licensing-client/license-auto-activation.service";
 
 async function bootstrap() {
@@ -14,8 +14,9 @@ async function bootstrap() {
   const { AppModule } = await import("./app.module");
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
+    bodyParser: false,
   });
-  app.useBodyParser("json", { limit: INBOUND_WEBHOOK_BODY_LIMIT });
+  configureInboundWebhookBodyParser(app);
   app.enableCors({
     origin: deploymentConfig.webOrigin,
     credentials: true,

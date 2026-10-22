@@ -32,8 +32,7 @@ describe("LicenseStatusBanner", () => {
     const html = renderToStaticMarkup(createElement("div", null, element));
 
     expect(html).toContain("período de tolerância");
-    expect(html).toContain("feedback-banner");
-    expect(html).toContain("warn");
+    expect(html).toContain("feedback-banner license-banner warn");
   });
 
   it("renders a red persistent banner when the license is blocked", async () => {

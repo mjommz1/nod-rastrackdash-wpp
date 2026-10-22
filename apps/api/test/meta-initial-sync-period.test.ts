@@ -130,6 +130,7 @@ describe("MetaInitialSyncPeriodService", () => {
                 "uazapi",
                 "meta_cloud",
                 "data_crazy",
+                "unnichat",
               ],
             },
             removedAt: null,

@@ -9,7 +9,7 @@ import { DiagnosticProcessor } from "./diagnostic.processor";
 import { DiagnosticsQueueService } from "./diagnostics-queue.service";
 import { OpsAlertsProcessor } from "./ops-alerts.processor";
 import { OpsAlertsQueueService } from "./ops-alerts-queue.service";
-import { CONVERSION_EVENTS_QUEUE, DIAGNOSTIC_QUEUE, OPS_ALERTS_QUEUE } from "./queue.constants";
+import { CONVERSION_EVENTS_QUEUE, DIAGNOSTIC_QUEUE, KOMMO_WEBHOOK_QUEUE, OPS_ALERTS_QUEUE } from "./queue.constants";
 
 @Module({
   imports: [
@@ -27,6 +27,7 @@ import { CONVERSION_EVENTS_QUEUE, DIAGNOSTIC_QUEUE, OPS_ALERTS_QUEUE } from "./q
     BullModule.registerQueue({
       name: CONVERSION_EVENTS_QUEUE
     }),
+    BullModule.registerQueue({ name: KOMMO_WEBHOOK_QUEUE }),
     BullModule.registerQueue({
       name: OPS_ALERTS_QUEUE
     })

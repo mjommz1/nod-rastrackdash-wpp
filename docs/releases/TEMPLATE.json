@@ -1,0 +1,15 @@
+{
+  "version": "PENDENTE: versão definida pelo mantenedor",
+  "title": "PENDENTE: título da atualização",
+  "summary": "PENDENTE: benefício e impacto para o aluno",
+  "changes": "PENDENTE: novidades e melhorias incluídas",
+  "fixes": "",
+  "requirements": "PENDENTE: requisitos reais ou declaração de que não mudaram",
+  "upgradeGuide": "PENDENTE: preparar passos verificados\nBackup: informar cópia e cuidados aplicáveis.\nMigration: informar quais e a ordem, ou não se aplica.\nVariáveis de ambiente: informar nomes e finalidade, sem valores secretos.\nPreservação de customizações: preservar alterações locais do aluno.\nVerificação: informar verificações e resultado esperado.",
+  "rollback": "PENDENTE: procedimento de recuperação verificado e limitações",
+  "minVersion": null,
+  "breakingChange": false,
+  "components": "BOTH",
+  "links": [],
+  "tags": []
+}

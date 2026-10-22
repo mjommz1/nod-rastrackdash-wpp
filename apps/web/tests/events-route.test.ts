@@ -3,10 +3,99 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import EventsPage from "../src/app/(app)/events/page";
+import { retryBlockedMetaEventsAction } from "../src/app/(app)/events/actions";
+import { initialBackofficeActionState } from "../src/components/backoffice-action-form";
+
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+function auditEvent(overrides: Record<string, unknown>) {
+  return {
+    id: "event_1",
+    eventName: "Purchase",
+    eventLabel: "Compras",
+    deliveryState: "sent",
+    statusLabel: "Enviado",
+    statusDetail: "Recebido pela Meta",
+    source: "external_integration",
+    sourceLabel: "Integracao externa",
+    leadId: null,
+    leadName: null,
+    phoneDisplay: null,
+    campaignId: null,
+    campaignName: null,
+    adSetId: null,
+    adSetName: null,
+    adId: null,
+    adName: null,
+    pixelId: null,
+    pageId: null,
+    occurredAt: "2026-07-12T15:00:00.000Z",
+    sentAt: "2026-07-12T15:01:00.000Z",
+    status: "sent",
+    canRetry: false,
+    providerResponseSummary: null,
+    errorCode: null,
+    errorMessage: null,
+    valueSource: null,
+    ...overrides,
+  };
+}
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function mockAuditApi({
+  audit,
+  role,
+}: {
+  audit: ReturnType<typeof auditResponse>;
+  role: "owner" | "member";
+}) {
+  return vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+
+      if (url.endsWith("/workspaces/current")) {
+        return json({ id: "workspace_1", role, accessMode: "member" });
+      }
+
+      if (url.includes("/reports/conversions/audit?")) {
+        return json(audit);
+      }
+
+      return json({ message: "not found" }, 404);
+    });
+}
+
+function blockedAudit(canRetry: boolean) {
+  const audit = auditResponse([
+    auditEvent({
+      id: "event_blocked",
+      deliveryState: "blocked",
+      statusLabel: "Bloqueado",
+      statusDetail: "Depende de configuracao",
+      sentAt: null,
+      status: "not_configured",
+      canRetry,
+      errorCode: "MissingAccessToken",
+      errorMessage: "Conexao com a Meta sem acesso",
+    }),
+  ]);
+
+  return {
+    ...audit,
+    summary: { ...audit.summary, sent: 0, blocked: 1 },
+  };
+}
 
 function auditResponse(events: unknown[]) {
   return {
@@ -222,6 +311,153 @@ describe("events route", () => {
     expect(html).toContain("Reenviar");
     expect(html).toContain('name="eventId"');
     expect(html).toContain('value="event_network_error"');
+  });
+
+  it("offers the owner a retry on a row blocked by configuration with honest copy", async () => {
+    mockAuditApi({ audit: blockedAudit(true), role: "owner" });
+
+    const element = await EventsPage({
+      searchParams: Promise.resolve({
+        since: "2026-07-06",
+        until: "2026-07-12",
+      }),
+    });
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain("Bloqueado");
+    expect(html).toContain('value="event_blocked"');
+    expect(html).toContain(
+      'title="Tentar enviar de novo com a conexao Meta atual"',
+    );
+    expect(html).not.toContain("Reenviar falha de comunicacao com a Meta");
+  });
+
+  it("hides every retry action from a member on blocked rows", async () => {
+    mockAuditApi({ audit: blockedAudit(false), role: "member" });
+
+    const element = await EventsPage({
+      searchParams: Promise.resolve({
+        since: "2026-07-06",
+        until: "2026-07-12",
+      }),
+    });
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain("Bloqueado");
+    expect(html).not.toContain("Reenviar");
+    expect(html).not.toContain('name="eventId"');
+    expect(html).not.toContain("audit-retry-blocked-form");
+  });
+
+  it("lets the owner retry blocked events for the current period and filters", async () => {
+    mockAuditApi({ audit: blockedAudit(true), role: "owner" });
+
+    const element = await EventsPage({
+      searchParams: Promise.resolve({
+        since: "2026-07-06",
+        until: "2026-07-12",
+        eventName: "Purchase",
+        status: "blocked",
+        source: "external_integration",
+        page: "2",
+      }),
+    });
+    const html = renderToStaticMarkup(createElement("div", null, element));
+    const formStart = html.indexOf('class="audit-retry-blocked-form"');
+    const form = html.slice(formStart, html.indexOf("</form>", formStart));
+
+    expect(formStart).toBeGreaterThan(-1);
+    expect(form).toContain("Reenviar bloqueados");
+    expect(form).toContain('name="since" value="2026-07-06"');
+    expect(form).toContain('name="until" value="2026-07-12"');
+    expect(form).toContain('name="eventName" value="Purchase"');
+    expect(form).toContain('name="status" value="blocked"');
+    expect(form).toContain('name="source" value="external_integration"');
+    expect(form).not.toContain('name="page"');
+    expect(form).not.toContain("disabled");
+    expect(html).toContain("Eventos ja enviados nao sao reenviados.");
+  });
+
+  it("disables the bulk retry when the period has no blocked events", async () => {
+    mockAuditApi({ audit: auditResponse([auditEvent({})]), role: "owner" });
+
+    const element = await EventsPage({
+      searchParams: Promise.resolve({
+        since: "2026-07-06",
+        until: "2026-07-12",
+      }),
+    });
+    const html = renderToStaticMarkup(createElement("div", null, element));
+    const formStart = html.indexOf('class="audit-retry-blocked-form"');
+    const form = html.slice(formStart, html.indexOf("</form>", formStart));
+
+    expect(formStart).toBeGreaterThan(-1);
+    expect(form).toContain("Reenviar bloqueados");
+    expect(form).toContain('disabled=""');
+  });
+
+  it("posts retry-blocked with the submitted filters and reports the returned counts", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        json({ claimed: 4, enqueued: 3, skipped: 2, failed: 1 }),
+      );
+    const formData = new FormData();
+    formData.set("since", "2026-07-06");
+    formData.set("until", "2026-07-12");
+    formData.set("eventName", "Purchase");
+    formData.set("status", "");
+    formData.set("source", "external_integration");
+
+    const state = await retryBlockedMetaEventsAction(
+      initialBackofficeActionState,
+      formData,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost:3333/reports/conversions/audit/retry-blocked?since=2026-07-06&until=2026-07-12&eventName=Purchase&source=external_integration",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(state.status).toBe("success");
+    expect(state.message).toBe(
+      "3 eventos enfileirados para nova tentativa. 2 ja nao estavam bloqueados e ficaram de fora. 1 nao pode ser enfileirado agora; tente de novo em instantes.",
+    );
+  });
+
+  it("says nothing was resent when no blocked event was eligible", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json({ claimed: 0, enqueued: 0, skipped: 0, failed: 0 }),
+    );
+    const formData = new FormData();
+    formData.set("since", "2026-07-06");
+    formData.set("until", "2026-07-12");
+
+    const state = await retryBlockedMetaEventsAction(
+      initialBackofficeActionState,
+      formData,
+    );
+
+    expect(state.status).toBe("success");
+    expect(state.message).toBe(
+      "Nenhum evento bloqueado para reenviar neste periodo.",
+    );
+  });
+
+  it("reports an error when the bulk retry is refused", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json({ message: "Somente o owner pode reenviar eventos Meta" }, 403),
+    );
+    const formData = new FormData();
+    formData.set("since", "2026-07-06");
+    formData.set("until", "2026-07-12");
+
+    const state = await retryBlockedMetaEventsAction(
+      initialBackofficeActionState,
+      formData,
+    );
+
+    expect(state.status).toBe("error");
+    expect(state.message).not.toContain("BM");
   });
 
   it("renders an unavailable state without invented events", async () => {

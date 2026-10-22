@@ -39,7 +39,7 @@ describe("clientNavVisibleForPermissions", () => {
     );
   });
 
-  it("hides integrations, settings and subscription for a member", () => {
+  it("hides integrations, conversions and settings for a member", () => {
     const memberPermissions = permissions();
 
     expect(
@@ -49,11 +49,11 @@ describe("clientNavVisibleForPermissions", () => {
       clientNavVisibleForPermissions("settings", memberPermissions),
     ).toBe(false);
     expect(
-      clientNavVisibleForPermissions("subscription", memberPermissions),
+      clientNavVisibleForPermissions("conversions", memberPermissions),
     ).toBe(false);
   });
 
-  it("shows integrations and settings but hides subscription for an admin without billing", () => {
+  it("shows integrations, conversions and settings to an admin who manages them", () => {
     const adminPermissions = permissions({
       canManageIntegrations: true,
       canManageWorkspaceSettings: true,
@@ -67,8 +67,8 @@ describe("clientNavVisibleForPermissions", () => {
       clientNavVisibleForPermissions("settings", adminPermissions),
     ).toBe(true);
     expect(
-      clientNavVisibleForPermissions("subscription", adminPermissions),
-    ).toBe(false);
+      clientNavVisibleForPermissions("conversions", adminPermissions),
+    ).toBe(true);
   });
 
   it("shows everything for an owner", () => {
@@ -85,13 +85,29 @@ describe("clientNavVisibleForPermissions", () => {
       true,
     );
     expect(
-      clientNavVisibleForPermissions("subscription", ownerPermissions),
+      clientNavVisibleForPermissions("conversions", ownerPermissions),
+    ).toBe(true);
+  });
+
+  it("shows conversions only with the integrations permission", () => {
+    expect(
+      clientNavVisibleForPermissions(
+        "conversions",
+        permissions({ canManageWorkspaceSettings: true }),
+      ),
+    ).toBe(false);
+    expect(
+      clientNavVisibleForPermissions(
+        "conversions",
+        permissions({ canManageIntegrations: true }),
+      ),
     ).toBe(true);
   });
 
   it("fails closed when permissions are missing", () => {
     expect(clientNavVisibleForPermissions("integrations", null)).toBe(false);
     expect(clientNavVisibleForPermissions("settings", undefined)).toBe(false);
+    expect(clientNavVisibleForPermissions("conversions", null)).toBe(false);
     expect(clientNavVisibleForPermissions("overview", null)).toBe(true);
   });
 });

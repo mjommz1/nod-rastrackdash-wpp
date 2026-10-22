@@ -8,6 +8,8 @@ export const leadStatuses = [
   "lost",
 ] as const;
 
+export const leadBases = ["new", "returning", "repeat"] as const;
+
 export const leadListQuerySchema = z.object({
   search: z.string().trim().min(1).max(120).optional(),
   status: z.enum(leadStatuses).optional(),
@@ -17,6 +19,15 @@ export const leadListQuerySchema = z.object({
   adSetId: z.string().trim().min(1).max(120).optional(),
   adId: z.string().trim().min(1).max(120).optional(),
   attribution: z.enum(["paid", "organic"]).optional(),
+  /**
+   * Which people the period selects. "new" (default): first contact inside the
+   * period (each person counts once ever, on the day of the first message).
+   * "returning": first contact before the period and a new paid conversation
+   * (LeadSubmitted) inside it. Without `since`, "returning" matches nobody.
+   * "repeat": two or more paid conversations (LeadSubmitted) inside the period,
+   * new or not. Without a period, "repeat" matches nobody.
+   */
+  base: z.enum(leadBases).optional(),
   since: z
     .string()
     .trim()
@@ -31,6 +42,20 @@ export const leadListQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
+
+export const leadExportFormats = ["csv", "xlsx"] as const;
+
+/** Same filters as the list; the export always returns every matching row. */
+export const leadExportQuerySchema = leadListQuerySchema
+  .omit({ page: true, pageSize: true, limit: true })
+  .extend({
+    format: z.enum(leadExportFormats),
+    /** "Ocultar dados" is a browser-side toggle, so the client sends it. */
+    maskSensitive: z
+      .enum(["1", "true", "0", "false"])
+      .optional()
+      .transform((value) => value === "1" || value === "true"),
+  });
 
 export const leadListItemSchema = z.object({
   id: z.string().min(1),
@@ -62,6 +87,16 @@ export const leadListPageSchema = z.object({
     totalItems: z.number().int().nonnegative(),
     totalPages: z.number().int().nonnegative(),
   }),
+  /**
+   * Same filters without the attribution one, split by origin: lets the page
+   * show organic leads as their own count next to the paid (anuncio) ones.
+   */
+  attributionCounts: z
+    .object({
+      paid: z.number().int().nonnegative(),
+      organic: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 
 export const leadDetailConversionEventSchema = z.object({
@@ -107,6 +142,7 @@ export const leadDetailSchema = z.object({
 });
 
 export type LeadStatusDto = z.infer<typeof leadListItemSchema>["status"];
+export type LeadBaseDto = (typeof leadBases)[number];
 export type LeadListQueryDto = z.infer<typeof leadListQuerySchema>;
 export type LeadListItemDto = z.infer<typeof leadListItemSchema>;
 export type LeadListPageDto = z.infer<typeof leadListPageSchema>;
@@ -117,3 +153,5 @@ export type LeadDetailWebhookEventDto = z.infer<
   typeof leadDetailWebhookEventSchema
 >;
 export type LeadDetailDto = z.infer<typeof leadDetailSchema>;
+export type LeadExportQueryDto = z.infer<typeof leadExportQuerySchema>;
+export type LeadExportFormat = (typeof leadExportFormats)[number];

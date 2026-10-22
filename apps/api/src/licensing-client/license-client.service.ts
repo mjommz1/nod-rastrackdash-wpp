@@ -1,4 +1,5 @@
 import { createPublicKey, type KeyLike } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 import { PrismaService } from "../common/prisma/prisma.service";
 import { RUNTIME_ENV, RUNTIME_FETCH, type RuntimeEnv, type RuntimeFetch } from "../common/runtime/runtime.module";
@@ -125,7 +126,9 @@ export class LicenseClientService {
    * Single source of truth for "may this install write?", shared by the
    * soft-lock guard and the public status endpoint.
    */
-  async getLockState(): Promise<LicenseLockState> {
+  async getLockState(
+    client?: Pick<Prisma.TransactionClient, "licenseState">,
+  ): Promise<LicenseLockState> {
     if (await this.isInert()) {
       return {
         inert: true,
@@ -135,7 +138,7 @@ export class LicenseClientService {
       };
     }
 
-    const state = await this.getState();
+    const state = await this.getState(client);
     if (state.usable) {
       return { inert: false, locked: false, reason: null, state };
     }
@@ -186,8 +189,10 @@ export class LicenseClientService {
     return verifyCompactToken(token, publicKey);
   }
 
-  async getState(): Promise<LicenseRuntimeState> {
-    const row = await this.prisma.licenseState.findUnique({ where: { id: LICENSE_STATE_ID } });
+  async getState(
+    client: Pick<Prisma.TransactionClient, "licenseState"> = this.prisma,
+  ): Promise<LicenseRuntimeState> {
+    const row = await client.licenseState.findUnique({ where: { id: LICENSE_STATE_ID } });
     if (!row) {
       // Never activated: a configured key whose activation failed is reported
       // separately so the UI can tell "activate it" from "fix the key".

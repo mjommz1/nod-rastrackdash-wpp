@@ -1,4 +1,5 @@
 import type { FunnelStageConfigurationDto } from "@wpptrack/shared";
+import { repeatConversationLeadIds } from "../leads/lead-cohort";
 
 export type ReportingMetricScope = {
   adId?: string | null;
@@ -26,6 +27,8 @@ export type ReportingMetricLead = {
 
 export type ReportingMetricEvent = {
   id: string;
+  /** Lead the event belongs to (resolved by phone hash when missing). */
+  leadId?: string | null;
   phoneHash: string | null;
   customerIdentityKey?: string | null;
   businessSource?: string | null;
@@ -47,7 +50,23 @@ export type ReportingMetricsCalculationInput = {
   funnelStages?: FunnelStageConfigurationDto[];
   events: ReportingMetricEvent[];
   insight: ReportingInsightInput;
+  /**
+   * Leads whose FIRST contact falls in the period (leads novos), with the
+   * attribution of that first contact. They alone make realConversations/CPL.
+   */
   leads: ReportingMetricLead[];
+  /**
+   * Paid LeadSubmitted events in the period from people whose first contact
+   * was before it (leads que voltaram), each with `leadId`. Counted apart and
+   * never added to realConversations, CPL or the funnel.
+   */
+  returningEvents?: ReportingMetricEvent[];
+  /**
+   * Every lead of each phone whose conversations carry no lead id, loaded by
+   * the caller from the database (same source as the Leads page). Without it
+   * the leads and events given are used.
+   */
+  leadIdsByPhoneHash?: ReadonlyMap<string, readonly string[]>;
   scope: ReportingMetricScope;
 };
 
@@ -67,6 +86,13 @@ export type ReportingMetricsResult = {
   costPerMetaConversationCents: number | null;
   realConversations: number;
   costPerRealConversationCents: number | null;
+  returningLeads: number;
+  adConversationEvents: number;
+  /**
+   * People with two or more paid conversations (LeadSubmitted sent to Meta) in
+   * the period, leads novos included. Informational: never part of CPL.
+   */
+  repeatConversationLeads: number;
   organicLeads: number;
   totalReceived: number;
   trackingRate: number | null;
@@ -98,9 +124,14 @@ const funnelLabels: Record<FunnelStepKey, string> = {
   first_purchase: "Primeira compra",
   purchase: "Compras",
   qualified_lead: "Lead qualificado",
-  real_conversations: "Conversas reais iniciadas",
+  real_conversations: "Leads novos",
   repurchase: "Recompra",
 };
+
+const legacyLeadSubmittedLabels = new Set([
+  "conversas reais iniciadas",
+  "conversas reais",
+]);
 
 export class ReportingMetricsEngine {
   calculate(input: ReportingMetricsCalculationInput): ReportingMetricsResult {
@@ -116,12 +147,32 @@ export class ReportingMetricsEngine {
     const spendCents = input.insight.spendCents;
     const metaConversationsStarted =
       input.insight.metaConversationsStarted ?? 0;
-    const realConversationIds = this.realConversationIds(
-      scopedLeads,
-      countableEvents,
+    const scopedReturningEvents = (input.returningEvents ?? []).filter(
+      (event) =>
+        this.matchesScope(event, input.scope) && this.isCountableEvent(event),
     );
-    const organicLeadIds = this.organicLeadIds(scopedLeads, countableEvents);
+    const realConversationIds = this.realConversationIds(scopedLeads);
+    const organicLeadIds = this.organicLeadIds(scopedLeads);
     const realConversations = realConversationIds.size;
+    const returningLeads = this.returningLeadIds(scopedReturningEvents).size;
+    const paidConversationEvents = [
+      ...countableEvents,
+      ...scopedReturningEvents,
+    ];
+    const adConversationEvents = this.adConversationEventCount(
+      paidConversationEvents,
+    );
+    const repeatConversationLeads = this.repeatConversationLeadCount(
+      paidConversationEvents,
+      input.leadIdsByPhoneHash ??
+        this.leadIdsByPhoneHash([
+          ...input.leads.map((lead) => ({
+            leadId: lead.id,
+            phoneHash: lead.phoneHash,
+          })),
+          ...paidConversationEvents,
+        ]),
+    );
     const organicLeads = organicLeadIds.size;
     const totalReceived = realConversations + organicLeads;
     const qualifiedLead = countableEvents.filter(
@@ -169,6 +220,9 @@ export class ReportingMetricsEngine {
       ),
       realConversations,
       costPerRealConversationCents: this.costPer(spendCents, realConversations),
+      returningLeads,
+      adConversationEvents,
+      repeatConversationLeads,
       organicLeads,
       totalReceived,
       trackingRate:
@@ -207,59 +261,72 @@ export class ReportingMetricsEngine {
     };
   }
 
+  /**
+   * Leads novos per day: each paid lead once, on the day of its first contact.
+   * Later conversations of the same person never add to any day.
+   */
   dailyRealConversationCounts(
-    input: Pick<ReportingMetricsCalculationInput, "events" | "leads">,
+    input: Pick<ReportingMetricsCalculationInput, "leads">,
     dateKey: (date: Date) => string,
   ): Map<string, number> {
-    const firstOccurrenceByIdentity = new Map<string, string>();
-    const register = (identity: string, occurredAt?: Date | null) => {
-      if (!occurredAt) {
-        return;
-      }
-
-      const day = dateKey(occurredAt);
-      const current = firstOccurrenceByIdentity.get(identity);
-
-      if (!current || day < current) {
-        firstOccurrenceByIdentity.set(identity, day);
-      }
-    };
+    const firstDayByIdentity = new Map<string, string>();
 
     for (const lead of input.leads) {
-      if (this.isPaidRealConversation(lead)) {
-        register(
-          this.identityKey(lead, `lead:${lead.id}`),
-          lead.firstMessageAt ?? lead.createdAt,
-        );
+      const firstContactAt = lead.firstMessageAt ?? lead.createdAt;
+
+      if (!firstContactAt || !this.isPaidRealConversation(lead)) {
+        continue;
+      }
+
+      const identity = this.identityKey(lead, `lead:${lead.id}`);
+      const day = dateKey(firstContactAt);
+      const current = firstDayByIdentity.get(identity);
+
+      if (!current || day < current) {
+        firstDayByIdentity.set(identity, day);
       }
     }
 
-    for (const event of input.events) {
-      if (
-        event.eventName === "LeadSubmitted" &&
-        this.isCountableEvent(event) &&
-        this.isPaidLeadEvent(event)
-      ) {
-        register(
-          this.identityKey(event, `event:${event.id}`),
-          event.eventOccurredAt,
-        );
+    return this.countByDay(firstDayByIdentity.values());
+  }
+
+  /** Leads que voltaram per day: each person once per day they came back. */
+  dailyReturningLeadCounts(
+    input: Pick<ReportingMetricsCalculationInput, "returningEvents">,
+    dateKey: (date: Date) => string,
+  ): Map<string, number> {
+    const seen = new Set<string>();
+    const days: string[] = [];
+
+    for (const event of input.returningEvents ?? []) {
+      if (!this.isPaidConversation(event)) {
+        continue;
+      }
+
+      const day = dateKey(event.eventOccurredAt);
+      const key = `${day}|${this.returningIdentity(event)}`;
+
+      if (!seen.has(key)) {
+        seen.add(key);
+        days.push(day);
       }
     }
 
+    return this.countByDay(days);
+  }
+
+  private countByDay(days: Iterable<string>): Map<string, number> {
     const counts = new Map<string, number>();
 
-    for (const day of firstOccurrenceByIdentity.values()) {
+    for (const day of days) {
       counts.set(day, (counts.get(day) ?? 0) + 1);
     }
 
     return counts;
   }
 
-  private realConversationIds(
-    leads: ReportingMetricLead[],
-    events: ReportingMetricEvent[],
-  ): Set<string> {
+  /** Leads novos de anuncio: only lead rows, never conversation events. */
+  private realConversationIds(leads: ReportingMetricLead[]): Set<string> {
     const ids = new Set<string>();
 
     for (const lead of leads) {
@@ -268,19 +335,10 @@ export class ReportingMetricsEngine {
       }
     }
 
-    for (const event of events) {
-      if (event.eventName === "LeadSubmitted" && this.isPaidLeadEvent(event)) {
-        ids.add(this.identityKey(event, `event:${event.id}`));
-      }
-    }
-
     return ids;
   }
 
-  private organicLeadIds(
-    leads: ReportingMetricLead[],
-    events: ReportingMetricEvent[],
-  ): Set<string> {
+  private organicLeadIds(leads: ReportingMetricLead[]): Set<string> {
     const ids = new Set<string>();
 
     for (const lead of leads) {
@@ -289,13 +347,93 @@ export class ReportingMetricsEngine {
       }
     }
 
+    return ids;
+  }
+
+  private returningLeadIds(events: ReportingMetricEvent[]): Set<string> {
+    const ids = new Set<string>();
+
     for (const event of events) {
-      if (event.eventName === "LeadSubmitted" && this.isOrganic(event)) {
-        ids.add(this.identityKey(event, `event:${event.id}`));
+      if (this.isPaidConversation(event)) {
+        ids.add(this.returningIdentity(event));
       }
     }
 
     return ids;
+  }
+
+  /** A paid conversation: LeadSubmitted sent to Meta (not skipped, not organic). */
+  private isPaidConversation(event: ReportingMetricEvent): boolean {
+    return (
+      event.eventName === "LeadSubmitted" &&
+      this.isCountableEvent(event) &&
+      this.isPaidLeadEvent(event)
+    );
+  }
+
+  private returningIdentity(event: ReportingMetricEvent): string {
+    return event.leadId
+      ? `lead:${event.leadId}`
+      : this.identityKey(event, `event:${event.id}`);
+  }
+
+  /** Paid LeadSubmitted events (one per CTWA conversation sent to Meta). */
+  private adConversationEventCount(events: ReportingMetricEvent[]): number {
+    const ids = new Set<string>();
+
+    for (const event of events) {
+      if (this.isPaidConversation(event)) {
+        ids.add(event.id);
+      }
+    }
+
+    return ids.size;
+  }
+
+  /**
+   * Distinct people (lead rows) with at least two paid conversations in the
+   * events given (the period's), whether they are leads novos or came back.
+   * Same shared rule as the Leads page: a conversation without a lead id
+   * counts for every lead of its phone; one with no lead is not a person.
+   */
+  private repeatConversationLeadCount(
+    events: ReportingMetricEvent[],
+    leadIdsByPhoneHash: ReadonlyMap<string, readonly string[]>,
+  ): number {
+    const counted = new Set<string>();
+    const conversations = events.filter((event) => {
+      if (!this.isPaidConversation(event) || counted.has(event.id)) {
+        return false;
+      }
+
+      counted.add(event.id);
+      return true;
+    });
+
+    return repeatConversationLeadIds(conversations, leadIdsByPhoneHash).length;
+  }
+
+  /** Fallback phone -> leads map from the leads and events at hand. */
+  private leadIdsByPhoneHash(
+    items: Array<{ leadId?: string | null; phoneHash: string | null }>,
+  ): Map<string, string[]> {
+    const map = new Map<string, string[]>();
+
+    for (const item of items) {
+      if (!item.leadId || !item.phoneHash) {
+        continue;
+      }
+
+      const ids = map.get(item.phoneHash) ?? [];
+
+      if (!ids.includes(item.leadId)) {
+        ids.push(item.leadId);
+      }
+
+      map.set(item.phoneHash, ids);
+    }
+
+    return map;
   }
 
   private classifyPurchases(
@@ -354,7 +492,7 @@ export class ReportingMetricsEngine {
           const steps = [
             this.step(
               this.funnelStageKey(stage.eventName),
-              stage.label,
+              this.funnelStageLabel(stage),
               value,
               this.costPer(input.spendCents, value),
             ),
@@ -493,6 +631,19 @@ export class ReportingMetricsEngine {
     return input.countableEvents.filter(
       (event) => event.eventName === eventName,
     ).length;
+  }
+
+  /**
+   * The LeadSubmitted stage now counts leads novos. Workspaces that kept the
+   * old default name see the new one; a custom name is left as configured.
+   */
+  private funnelStageLabel(stage: FunnelStageConfigurationDto): string {
+    return stage.eventName === "LeadSubmitted" &&
+      legacyLeadSubmittedLabels.has(
+        stage.label.trim().toLocaleLowerCase("pt-BR"),
+      )
+      ? funnelLabels.real_conversations
+      : stage.label;
   }
 
   private funnelStageKey(eventName: string): string {

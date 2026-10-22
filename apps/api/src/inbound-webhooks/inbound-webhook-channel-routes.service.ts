@@ -22,6 +22,21 @@ import type {
 import { normalizePhoneIdentity } from "../common/phone/phone-identity";
 import { PrismaService } from "../common/prisma/prisma.service";
 import {
+  CTWA_DESTINATION_AD_HINT_REASON,
+  CTWA_DESTINATION_REASON,
+  ctwaAdUnknown,
+  resolveCtwaDestination,
+} from "./authorized-ctwa-destination";
+import {
+  effectiveUnnichatMetaRouting,
+  lockUnnichatMetaPolicy,
+  type EffectiveMetaRouting,
+} from "./inbound-webhook-effective-meta-routing";
+import {
+  inboundMetaRouteEligible,
+  inboundMetaRouteMatches,
+} from "./inbound-webhook-meta-route-eligibility";
+import {
   type InboundWebhookMetaRoutePreview,
   InboundWebhookMetaRouteReaderService,
 } from "./inbound-webhook-meta-route-reader.service";
@@ -51,10 +66,20 @@ type PersistedChannel = Prisma.InboundWebhookChannelGetPayload<{
 
 type PersistedRoute = Prisma.InboundWebhookChannelRouteGetPayload<object>;
 
+/** Fase 4b (Unnichat): effective routing of the number plus whether it has a
+ * unique authorized page/pixel destination for CTWA leads without ad id. */
+type EntryReadinessPolicy = EffectiveMetaRouting & {
+  ctwaDestinationReadiness?: {
+    status: "verified" | "not_ready";
+    reason: string;
+  };
+};
+
 const channelReadinessEventSelect = {
   channelId: true,
   deliveryId: true,
   classification: true,
+  classificationReason: true,
   replayItem: {
     select: {
       status: true,
@@ -88,6 +113,18 @@ type RouteDecision =
       classification: "eligible_route_resolved";
       reason: "route_resolved";
       preview: ResolvedMetaRoutePreview;
+    }
+  | {
+      // Fase 4b (Unnichat): CTWA entry routed to the number's unique
+      // authorized page/pixel destination (no reporting account).
+      classification: "eligible_route_resolved";
+      reason:
+        typeof CTWA_DESTINATION_REASON | typeof CTWA_DESTINATION_AD_HINT_REASON;
+      preview: {
+        businessConnectionId: string;
+        reportingAccountId: null;
+        conversionDestinationId: string;
+      };
     }
   | {
       classification: "eligible_route_unresolved";
@@ -252,6 +289,41 @@ export class InboundWebhookChannelRoutesService {
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       });
+      if (input.routingMode && channel.connection.provider !== "unnichat")
+        throw new ConflictException(
+          "Modo de herança disponível apenas para Unnichat",
+        );
+      // Unnichat: an omitted routingMode keeps the channel's current mode. A
+      // NULL (legacy) mode keeps its EFFECTIVE source; an unknown legacy
+      // source is never widened to inheritance and requires an explicit mode.
+      let routingMode: "inherit_workspace" | "channel_override" | undefined;
+      if (channel.connection.provider === "unnichat") {
+        const current =
+          input.routingMode ??
+          channel.metaRoutingMode ??
+          (await effectiveUnnichatMetaRouting(transaction, channel)).source;
+        if (current === "legacy_unknown")
+          throw new ConflictException({
+            statusCode: 409,
+            error: "Conflict",
+            code: "channel_routing_mode_required",
+            message:
+              "Informe o modo de roteamento (automático ou rotas manuais) deste canal",
+          });
+        routingMode = current;
+      }
+      if (routingMode === "inherit_workspace" && input.routes.length)
+        throw new ConflictException(
+          input.routingMode
+            ? "Herança não aceita rotas locais como override"
+            : "Informe routingMode channel_override para salvar rotas manuais neste canal",
+        );
+      if (routingMode) {
+        await transaction.inboundWebhookChannel.updateMany({
+          where: { id: channelId, workspaceId },
+          data: { metaRoutingMode: routingMode },
+        });
+      }
       const normalizedRoutes = this.uniqueRouteInputs(input.routes);
 
       for (const route of normalizedRoutes) {
@@ -365,6 +437,34 @@ export class InboundWebhookChannelRoutesService {
         workspaceId,
         channelId,
       );
+      if (channel.connection.provider === "unnichat") {
+        // Removing a saved route is a manual override decision: the number
+        // never silently starts inheriting the workspace afterwards.
+        const policy = await effectiveUnnichatMetaRouting(transaction, channel);
+        if (policy.source === "channel_override") {
+          await transaction.inboundWebhookChannelRoute.updateMany({
+            where: {
+              workspaceId,
+              channelId,
+              active: true,
+              id: {
+                notIn: policy.routes.flatMap((route) =>
+                  route.id ? [route.id] : [],
+                ),
+              },
+            },
+            data: {
+              active: false,
+              validationStatus: removedRouteStatus,
+              validationErrorCode: removedRouteReason,
+            },
+          });
+        }
+        await transaction.inboundWebhookChannel.updateMany({
+          where: { id: channelId, workspaceId },
+          data: { metaRoutingMode: "channel_override" },
+        });
+      }
       const route = await transaction.inboundWebhookChannelRoute.findFirst({
         where: {
           id: routeId,
@@ -572,7 +672,30 @@ export class InboundWebhookChannelRoutesService {
 
     if (decisions.length > 0) {
       await this.prisma.$transaction(async (transaction) => {
-        for (const { eventId, decision } of decisions) {
+        if (channel.connection.provider === "unnichat")
+          await lockUnnichatMetaPolicy(
+            transaction,
+            workspaceId,
+            events.flatMap((event) => (event.adId ? [event.adId] : [])),
+          );
+        for (const entry of decisions) {
+          const eventId = entry.eventId;
+          const decision =
+            channel.connection.provider === "unnichat"
+              ? await new InboundWebhookChannelRoutesService(
+                  transaction as PrismaService,
+                  new InboundWebhookMetaRouteReaderService(
+                    transaction as PrismaService,
+                  ),
+                ).evaluateEventRoute(
+                  await this.requireChannel(
+                    transaction,
+                    workspaceId,
+                    channelId,
+                  ),
+                  events.find((event) => event.id === eventId)!.adId,
+                )
+              : entry.decision;
           const changed = await transaction.inboundWebhookEvent.updateMany({
             where: {
               id: eventId,
@@ -609,6 +732,46 @@ export class InboundWebhookChannelRoutesService {
     };
   }
 
+  /** Must run on a transaction-bound instance under lockUnnichatMetaPolicy
+   * (see refreshStaleCtwaAdHint). An ad-hint decision whose ad became known
+   * after classification is re-evaluated in place, so the SAME production or
+   * replay item (same Meta event ID) follows the canonical decision instead
+   * of failing route_invalid forever (open-event reevaluation skips events
+   * that already own an item). */
+  async refreshStaleAdHintDecision(event: {
+    id: string;
+    workspaceId: string;
+    channelId: string;
+    provider: string;
+    adId: string | null;
+    classificationReason: string | null;
+  }): Promise<boolean> {
+    const adId = event.adId?.trim();
+    if (
+      !adId ||
+      event.provider !== "unnichat" ||
+      event.classificationReason !== CTWA_DESTINATION_AD_HINT_REASON ||
+      (await ctwaAdUnknown(this.metaRouteReader, event.workspaceId, adId))
+    )
+      return false;
+    const channel = await this.requireChannel(
+      this.prisma,
+      event.workspaceId,
+      event.channelId,
+    );
+    const decision = await this.evaluateEventRoute(channel, adId);
+    const changed = await this.prisma.inboundWebhookEvent.updateMany({
+      where: {
+        id: event.id,
+        workspaceId: event.workspaceId,
+        channelId: event.channelId,
+        classificationReason: CTWA_DESTINATION_AD_HINT_REASON,
+      },
+      data: this.eventRouteUpdate(event.workspaceId, decision),
+    });
+    return changed.count === 1;
+  }
+
   private async evaluateEventRoute(
     channel: PersistedChannel,
     adIdValue: string | null,
@@ -623,7 +786,96 @@ export class InboundWebhookChannelRoutesService {
 
     const adId = adIdValue?.trim();
     if (!adId) {
+      // Fase 4b: an Unnichat CTWA entry without ad id (ctwa_clid present) is
+      // routed to the number's unique authorized page/pixel destination.
+      if (channel.connection.provider === "unnichat") {
+        const r = await resolveCtwaDestination(this.prisma, channel);
+        return r.kind === "authorized_ctwa_destination"
+          ? {
+              classification: "eligible_route_resolved",
+              reason: CTWA_DESTINATION_REASON,
+              preview: {
+                businessConnectionId: r.businessConnectionId,
+                reportingAccountId: null,
+                conversionDestinationId: r.destinationId,
+              },
+            }
+          : this.unresolvedDecision(r.reason);
+      }
       return this.unresolvedDecision("route_ad_missing");
+    }
+
+    const decision = await this.evaluateAdRoute(channel, adId);
+    if (
+      decision.classification === "eligible_route_resolved" ||
+      channel.connection.provider !== "unnichat"
+    )
+      return decision;
+    return this.ctwaAdHintFallback(channel, adId, decision);
+  }
+
+  /** Owner rule: CTWA CAPI needs only pixel + page_id + ctwa_clid. An ad id
+   * the workspace does not know (never synced, or its account is not a
+   * configured reporting account) must not block the lead when the channel
+   * still has exactly one authorized (pixel, page) destination. The ad id stays
+   * on the event only as an attribution hint. A KNOWN ad with an explicit
+   * configuration problem keeps its canonical reason; ambiguity never guesses. */
+  private async ctwaAdHintFallback(
+    channel: PersistedChannel,
+    adId: string,
+    canonical: RouteDecision,
+  ): Promise<RouteDecision> {
+    if (!(await ctwaAdUnknown(this.metaRouteReader, channel.workspaceId, adId)))
+      return canonical;
+    const r = await resolveCtwaDestination(this.prisma, channel);
+    if (r.kind === "authorized_ctwa_destination")
+      return {
+        classification: "eligible_route_resolved",
+        reason: CTWA_DESTINATION_AD_HINT_REASON,
+        preview: {
+          businessConnectionId: r.businessConnectionId,
+          reportingAccountId: null,
+          conversionDestinationId: r.destinationId,
+        },
+      };
+    return r.reason === "ctwa_destination_ambiguous"
+      ? this.unresolvedDecision(r.reason)
+      : canonical;
+  }
+
+  private async evaluateAdRoute(
+    channel: PersistedChannel,
+    adId: string,
+  ): Promise<RouteDecision> {
+    if (channel.connection.provider === "unnichat") {
+      const policy = await effectiveUnnichatMetaRouting(this.prisma, channel);
+      if (!policy.eligible)
+        return this.unresolvedDecision("route_not_configured");
+      if (policy.source === "inherit_workspace") {
+        const preview = await this.metaRouteReader.previewRoute({
+          workspaceId: channel.workspaceId,
+          adId,
+        });
+        return this.isResolvedPreview(preview)
+          ? {
+              classification: "eligible_route_resolved",
+              reason: "route_resolved",
+              preview,
+            }
+          : this.unresolvedDecision(
+              preview.status === "unresolved"
+                ? this.safeReason(preview.reason, "route_unresolved")
+                : "route_unresolved",
+            );
+      }
+      channel = {
+        ...channel,
+        routes: policy.routes.filter(
+          (route) =>
+            route.active !== false &&
+            route.validationStatus === validRouteStatus,
+        ) as PersistedRoute[],
+      };
     }
 
     if (channel.routes.length === 0) {
@@ -647,7 +899,12 @@ export class InboundWebhookChannelRoutesService {
     > = [];
 
     for (const route of channel.routes) {
-      if (!route.metaBusinessConnectionId) {
+      if (
+        !route.active ||
+        route.validationStatus !== validRouteStatus ||
+        route.workspaceId !== channel.workspaceId ||
+        !route.metaBusinessConnectionId
+      ) {
         previews.push({
           status: "unresolved",
           reason: "route_reference_missing",
@@ -729,9 +986,18 @@ export class InboundWebhookChannelRoutesService {
     channel: PersistedChannel,
     adIdValues: Array<string | null>,
   ): Promise<boolean> {
-    if (channel.connection.status === "paused" || channel.status === "paused") {
+    // A saved route is an operator's scope, including wildcard restrictions.
+    // Learning must never expand it to other accounts, BMs or destinations.
+    if (
+      channel.routes.length > 0 ||
+      channel.connection.status === "paused" ||
+      channel.status === "paused"
+    ) {
       return false;
     }
+    // Unnichat inheritance is virtual; overrides and unknown legacy cannot
+    // learn a wider scope.
+    if (channel.connection.provider === "unnichat") return false;
 
     const adIds = [
       ...new Set(
@@ -886,11 +1152,9 @@ export class InboundWebhookChannelRoutesService {
   ): preview is ResolvedMetaRoutePreview {
     return (
       this.isResolvedPreview(preview) &&
-      preview.businessConnectionId === route.metaBusinessConnectionId &&
-      (route.metaReportingAccountId === null ||
-        preview.reportingAccountId === route.metaReportingAccountId) &&
-      (route.metaConversionDestinationId === null ||
-        preview.conversionDestinationId === route.metaConversionDestinationId)
+      route.active &&
+      route.validationStatus === validRouteStatus &&
+      inboundMetaRouteMatches(route, preview)
     );
   }
 
@@ -915,7 +1179,9 @@ export class InboundWebhookChannelRoutesService {
         classificationReason: decision.reason,
         resolvedBusinessConnectionWorkspaceId: workspaceId,
         resolvedBusinessConnectionId: decision.preview.businessConnectionId,
-        resolvedReportingAccountWorkspaceId: workspaceId,
+        resolvedReportingAccountWorkspaceId: decision.preview.reportingAccountId
+          ? workspaceId
+          : null,
         resolvedReportingAccountId: decision.preview.reportingAccountId,
         resolvedConversionDestinationWorkspaceId: workspaceId,
         resolvedConversionDestinationId:
@@ -1005,80 +1271,15 @@ export class InboundWebhookChannelRoutesService {
     workspaceId: string,
     route: NormalizedRouteInput,
   ): Promise<void> {
-    const business = await transaction.metaBusinessConnection.findFirst({
-      where: {
-        id: route.metaBusinessConnectionId,
-        workspaceId,
-      },
-      select: {
-        id: true,
-        workspaceId: true,
-        status: true,
-        credential: {
-          select: {
-            workspaceId: true,
-            status: true,
-          },
-        },
-      },
-    });
-
     if (
-      !business ||
-      business.workspaceId !== workspaceId ||
-      business.status !== "active" ||
-      business.credential.workspaceId !== workspaceId ||
-      business.credential.status !== "active"
+      !(await inboundMetaRouteEligible(transaction, workspaceId, {
+        ...route,
+        workspaceId,
+        active: true,
+        validationStatus: validRouteStatus,
+      }))
     ) {
       this.throwNotFound();
-    }
-
-    if (route.metaReportingAccountId) {
-      const account = await transaction.metaReportingAccount.findFirst({
-        where: {
-          id: route.metaReportingAccountId,
-          workspaceId,
-        },
-        select: {
-          id: true,
-          workspaceId: true,
-          businessConnectionId: true,
-          active: true,
-        },
-      });
-
-      if (
-        !account ||
-        account.workspaceId !== workspaceId ||
-        !account.active ||
-        account.businessConnectionId !== business.id
-      ) {
-        this.throwNotFound();
-      }
-    }
-
-    if (route.metaConversionDestinationId) {
-      const destination = await transaction.metaConversionDestination.findFirst(
-        {
-          where: {
-            id: route.metaConversionDestinationId,
-            workspaceId,
-          },
-          select: {
-            id: true,
-            workspaceId: true,
-            status: true,
-          },
-        },
-      );
-
-      if (
-        !destination ||
-        destination.workspaceId !== workspaceId ||
-        destination.status !== "configured"
-      ) {
-        this.throwNotFound();
-      }
     }
   }
 
@@ -1126,9 +1327,11 @@ export class InboundWebhookChannelRoutesService {
     // UAZAPI/NOD channels are bridged automatically from the WhatsApp
     // instance. Data Crazy payloads carry no business phone, only an instance
     // id, so a phone-keyed provisional channel could never be merged.
+    // Unnichat binds its number when the connection is created (Fase 4b).
     if (
       connection.provider === "uazapi" ||
-      connection.provider === "data_crazy"
+      connection.provider === "data_crazy" ||
+      connection.provider === "unnichat"
     ) {
       throw new BadRequestException(
         "Este provedor cadastra o canal automaticamente",
@@ -1238,16 +1441,73 @@ export class InboundWebhookChannelRoutesService {
     }
 
     return new Map(
-      channels.map((channel) => [
-        channel.id,
-        this.channelReadiness(
-          channel,
-          eventsByChannel.get(channel.id) ?? [],
-          now,
-          availableDeliveryIds,
-        ),
-      ]),
+      await Promise.all(
+        channels.map(async (channel) => {
+          const readiness = this.channelReadiness(
+            channel,
+            eventsByChannel.get(channel.id) ?? [],
+            now,
+            availableDeliveryIds,
+            (
+              await Promise.all(
+                channel.routes.map((route) =>
+                  inboundMetaRouteEligible(this.prisma, workspaceId, route),
+                ),
+              )
+            ).filter(Boolean).length,
+            channel.connection.provider === "unnichat"
+              ? await this.effectiveEntryReadiness(channel)
+              : undefined,
+          );
+          // CRM-only readiness (Kommo/Pipedrive channel binding): whether this
+          // number may use the verified unique workspace page/pixel. It never
+          // changes the entry readiness above.
+          return [
+            channel.id,
+            {
+              ...readiness,
+              crmDestinationReadiness:
+                await this.crmDestinationReadiness(channel),
+            },
+          ] as const;
+        }),
+      ),
     );
+  }
+
+  /** Fase 4b (Unnichat): readiness follows the number's effective routing
+   * (inherit the workspace or its own override) and the unique authorized
+   * page/pixel destination used by CTWA leads without ad id. */
+  private async effectiveEntryReadiness(
+    channel: PersistedChannel,
+  ): Promise<EntryReadinessPolicy> {
+    const policy = await effectiveUnnichatMetaRouting(this.prisma, channel);
+    const destination = await resolveCtwaDestination(this.prisma, channel);
+    return {
+      ...policy,
+      eligible:
+        policy.eligible || destination.kind === "authorized_ctwa_destination",
+      ctwaDestinationReadiness:
+        destination.kind === "authorized_ctwa_destination"
+          ? { status: "verified", reason: "authorized_ctwa_destination" }
+          : { status: "not_ready", reason: destination.reason },
+    };
+  }
+
+  private async crmDestinationReadiness(
+    channel: PersistedChannel,
+  ): Promise<{ status: "verified" | "not_ready"; reason: string }> {
+    try {
+      const destination = await resolveCtwaDestination(this.prisma, channel, {
+        crmAnyProvider: true,
+      });
+      return destination.kind === "authorized_ctwa_destination"
+        ? { status: "verified", reason: "authorized_ctwa_destination" }
+        : { status: "not_ready", reason: destination.reason };
+    } catch {
+      // Readiness is informative: a lookup failure never breaks the listing.
+      return { status: "not_ready", reason: "crm_destination_unavailable" };
+    }
   }
 
   private channelReadiness(
@@ -1255,11 +1515,10 @@ export class InboundWebhookChannelRoutesService {
     events: ChannelReadinessEvent[],
     now: Date,
     availableDeliveryIds: ReadonlySet<string>,
+    validRouteCount = 0,
+    policy?: EntryReadinessPolicy,
   ): InboundWebhookChannelReadinessDto {
     const routeCount = channel.routes.length;
-    const validRouteCount = channel.routes.filter(
-      (route) => route.validationStatus === validRouteStatus,
-    ).length;
     const routedEvents = events.filter(
       (event) => event.classification === "eligible_route_resolved",
     );
@@ -1304,13 +1563,23 @@ export class InboundWebhookChannelRoutesService {
     if (channel.status === "paused") {
       blockers.push("channel_paused");
     }
-    if (routeCount === 0) {
+    if (policy ? !policy.eligible : routeCount === 0) {
       blockers.push("route_not_configured");
-    } else if (validRouteCount !== routeCount) {
+    } else if (
+      policy?.source !== "inherit_workspace" &&
+      validRouteCount !== routeCount
+    ) {
       blockers.push("route_not_valid");
     }
     if (events.length === 0) {
       blockers.push("ctwa_not_observed");
+    }
+    if (
+      openEvents.some(
+        (event) => event.classificationReason === "route_ad_missing",
+      )
+    ) {
+      blockers.push("ctwa_ad_unavailable");
     }
     if (unresolvedEvents.length > 0) {
       blockers.push("ctwa_unresolved");
@@ -1328,8 +1597,7 @@ export class InboundWebhookChannelRoutesService {
     const hardBlocked =
       channel.connection.status === "paused" ||
       channel.status === "paused" ||
-      routeCount === 0 ||
-      validRouteCount === 0;
+      (policy ? !policy.eligible : routeCount === 0 || validRouteCount === 0);
     const state =
       events.length === 0
         ? "waiting"
@@ -1346,6 +1614,18 @@ export class InboundWebhookChannelRoutesService {
       blockers,
       routeCount,
       validRouteCount,
+      ...(policy
+        ? {
+            routingSource: policy.source,
+            effectiveRouteEligible: policy.eligible,
+            ...(policy.ctwaDestinationReadiness
+              ? { ctwaDestinationReadiness: policy.ctwaDestinationReadiness }
+              : {}),
+            adUnavailableCtwa: openEvents.filter(
+              (event) => event.classificationReason === "route_ad_missing",
+            ).length,
+          }
+        : {}),
       totalCtwa: events.length,
       routedCtwa: routedEvents.length,
       unresolvedCtwa: unresolvedEvents.length,
@@ -1469,3 +1749,18 @@ export class InboundWebhookChannelRoutesService {
 }
 
 export { resourceNotFoundMessage };
+
+/** Re-evaluates a stale ad-hint decision inside the caller's transaction (the
+ * caller already holds lockUnnichatMetaPolicy). true = the event changed and
+ * must be reloaded before materialization. */
+export function refreshStaleCtwaAdHint(
+  transaction: Prisma.TransactionClient,
+  event: Parameters<
+    InboundWebhookChannelRoutesService["refreshStaleAdHintDecision"]
+  >[0],
+): Promise<boolean> {
+  return new InboundWebhookChannelRoutesService(
+    transaction as PrismaService,
+    new InboundWebhookMetaRouteReaderService(transaction as PrismaService),
+  ).refreshStaleAdHintDecision(event);
+}

@@ -7,6 +7,7 @@ import { RequestDurationInterceptor } from "./common/http/request-duration.inter
 import { QueueModule } from "./common/queue/queue.module";
 import { RuntimeModule } from "./common/runtime/runtime.module";
 import { ConversionRulesModule } from "./conversion-rules/conversion-rules.module";
+import { CurrencyModule } from "./currency/currency.module";
 import { DiagnosticsModule } from "./diagnostics/diagnostics.module";
 import { EmailModule } from "./email/email.module";
 import { ExternalDataModule } from "./external-data/external-data.module";
@@ -24,6 +25,8 @@ import { TemplateVersionModule } from "./template-version/template-version.modul
 import { WebhooksModule } from "./webhooks/webhooks.module";
 import { WorkspacesModule } from "./workspaces/workspaces.module";
 import { OpsAlertsModule } from "./ops-alerts/ops-alerts.module";
+import { KommoModule } from "./kommo/kommo.module";
+import { PipedriveModule } from "./pipedrive/pipedrive.module";
 
 @Module({
   imports: [
@@ -34,6 +37,7 @@ import { OpsAlertsModule } from "./ops-alerts/ops-alerts.module";
     AuthModule,
     BackofficeWhatsappWebhooksModule,
     WorkspacesModule,
+    CurrencyModule,
     DiagnosticsModule,
     ExternalDataModule,
     IntegrationsModule,
@@ -48,6 +52,8 @@ import { OpsAlertsModule } from "./ops-alerts/ops-alerts.module";
     LicenseClientModule,
     OnboardingModule,
     TemplateVersionModule,
+    KommoModule,
+    PipedriveModule,
   ],
   controllers: [HealthController],
   providers: [

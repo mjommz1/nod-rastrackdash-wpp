@@ -9,7 +9,7 @@ export const conversionEventDisplayLabels: Record<ConversionEventNameDto, string
   AddToCart: "Adicionado ao carrinho",
   CartAbandoned: "Carrinho abandonado",
   InitiateCheckout: "Checkout iniciado",
-  LeadSubmitted: "Conversas reais iniciadas",
+  LeadSubmitted: "Leads novos",
   OrderCanceled: "Pedido cancelado",
   OrderCreated: "Pedido criado",
   OrderDelivered: "Pedido entregue",

@@ -26,7 +26,7 @@ export async function LicenseStatusBanner() {
     const copy = licenseLockCopy[lockReason];
 
     return (
-      <div className="feedback-banner error" role="alert">
+      <div className="feedback-banner license-banner error" role="alert">
         <strong>{copy.title}</strong>
         <span>{copy.detail}</span>
         <a href="/backoffice/license">Abrir página de licença</a>
@@ -36,7 +36,7 @@ export async function LicenseStatusBanner() {
 
   if (status.status === "grace") {
     return (
-      <div className="feedback-banner warn" role="status">
+      <div className="feedback-banner license-banner warn" role="status">
         <strong>Licença em período de tolerância</strong>
         <span>Licença em período de tolerância — renovar</span>
       </div>

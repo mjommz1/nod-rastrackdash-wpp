@@ -90,6 +90,7 @@ function fixture(metaAppSecret: string | undefined = appSecret) {
     ingestion,
     {} as never,
     {} as never,
+    {} as never,
   );
 
   return { controller, prisma };

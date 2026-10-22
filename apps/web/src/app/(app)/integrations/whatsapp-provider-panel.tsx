@@ -10,7 +10,7 @@ import {
   Webhook,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import type {
   WhatsappConnectionEditData,
   WhatsappConnectionEditResult,
@@ -51,32 +51,37 @@ const providerCards: Array<{
   {
     id: "uazapi_byo",
     title: "Uazapi (BYO)",
-    ingestion: "Receiver e parser Uazapi disponiveis para configuracao.",
+    ingestion: "Receptor e parser da Uazapi disponíveis para configuração.",
     pending: false,
   },
   {
     id: "nod_api",
     title: "NOD API",
     ingestion:
-      "Ingestion pendente: o payload do broker ainda nao tem parser compativel comprovado.",
+      "Em breve: novas conexões ainda não estão disponíveis; as existentes continuam gerenciáveis.",
     pending: true,
   },
   {
     id: "waha",
     title: "WAHA",
-    ingestion: "Ingestion pendente: receiver e parser WAHA ainda nao existem.",
+    ingestion:
+      "Em breve: novas conexões ainda não estão disponíveis; as existentes continuam gerenciáveis.",
     pending: true,
   },
   {
     id: "zapi",
     title: "Z-API",
-    ingestion: "Ingestion pendente: receiver e parser Z-API ainda nao existem.",
+    ingestion:
+      "Em breve: novas conexões ainda não estão disponíveis; as existentes continuam gerenciáveis.",
     pending: true,
   },
 ];
 
+export type WhatsappProviderId = ProviderId;
+
 export function WhatsappProviderPanel({
-  connections,
+  connections: allConnections,
+  provider: scopedProvider,
   canManage,
   createAction,
   testAction,
@@ -84,8 +89,15 @@ export function WhatsappProviderPanel({
   editAction,
   loadEditAction,
   deleteAction,
+  licenseLocked = false,
+  allowCreate = true,
 }: {
   connections: WhatsappConnectionDto[];
+  /**
+   * Scopes the panel to one provider (Integrations hub modal): only its
+   * connections and status are shown and the create form is fixed to it.
+   */
+  provider?: ProviderId;
   canManage: boolean;
   createAction: WhatsappProviderAction;
   testAction: WhatsappProviderAction;
@@ -93,9 +105,28 @@ export function WhatsappProviderPanel({
   editAction: WhatsappProviderAction;
   loadEditAction: WhatsappProviderLoadEditAction;
   deleteAction: WhatsappProviderAction;
+  /**
+   * Client-side hint only (the API stays the authority with HTTP 423): while
+   * the license is locked every write control is disabled.
+   */
+  licenseLocked?: boolean;
+  /** False for "Em breve" providers: existing connections stay manageable. */
+  allowCreate?: boolean;
 }) {
+  const titleId = useId();
   const router = useRouter();
-  const [provider, setProvider] = useState<ProviderId>("uazapi_byo");
+  const [provider, setProvider] = useState<ProviderId>(
+    scopedProvider ?? "uazapi_byo",
+  );
+  const connections = scopedProvider
+    ? allConnections.filter(
+        (connection) => connection.provider === scopedProvider,
+      )
+    : allConnections;
+  const visibleCards = scopedProvider
+    ? providerCards.filter((card) => card.id === scopedProvider)
+    : providerCards;
+  const scopedTitle = visibleCards[0]?.title;
   const [pending, setPending] = useState<string | null>(null);
   const [notice, setNotice] = useState<WhatsappProviderActionResult | null>(
     null,
@@ -286,12 +317,16 @@ export function WhatsappProviderPanel({
   return (
     <section
       className="surface-panel"
-      aria-labelledby="whatsapp-providers-title"
+      aria-labelledby={titleId}
     >
       <div className="inbound-webhook-heading">
         <div>
           <span className="eyebrow">Conexoes WhatsApp</span>
-          <h2 id="whatsapp-providers-title">Provedores e receivers</h2>
+          <h2 id={titleId}>
+            {scopedProvider
+              ? `Conexoes ${scopedTitle ?? scopedProvider}`
+              : "Provedores e receivers"}
+          </h2>
           <p className="muted">
             As credenciais ficam somente na API. O token do receiver e salvo
             apenas como hash no servidor.
@@ -299,51 +334,67 @@ export function WhatsappProviderPanel({
         </div>
       </div>
 
-      <p className="muted">
-        Usa Umbler Talk ou Gupshup? Essas plataformas sao configuradas no bloco
-        de webhooks logo abaixo, e nao nesta lista.
-      </p>
+      <fieldset className="license-lock-scope" disabled={licenseLocked}>
+      {licenseLocked && canManage ? (
+        <p className="action-note warn" role="status">
+          Licença bloqueada: criar, testar, editar e excluir conexões está
+          indisponível. Verifique /backoffice/license.
+        </p>
+      ) : null}
+      {scopedProvider ? null : (
+        <p className="muted">
+          Usa Umbler Talk ou Gupshup? Essas plataformas sao configuradas no
+          bloco de webhooks logo abaixo, e nao nesta lista.
+        </p>
+      )}
 
       <div
         className="inbound-counter-grid"
         data-testid="whatsapp-provider-statuses"
       >
-        {providerCards.map((card) => (
+        {visibleCards.map((card) => (
           <div className="inbound-counter" key={card.id}>
             <strong>{card.title}</strong>
-            <span
-              className={
-                card.pending ? "action-note warn" : "action-note success"
-              }
-            >
+            <p className={card.pending ? "muted action-note warn" : "muted"}>
               {card.ingestion}
-            </span>
+            </p>
           </div>
         ))}
       </div>
 
-      {canManage ? (
+      {!allowCreate ? (
+        <p className="action-note" role="status">
+          Novas conexões deste provedor estão em breve. As conexões que você já
+          tem continuam disponíveis para testar, editar e excluir.
+        </p>
+      ) : null}
+
+      {canManage && allowCreate ? (
         <form
           className="inbound-webhook-create"
           onSubmit={submitCreate}
           onInvalid={(event) => clearCredentials(event.currentTarget)}
         >
-          <label>
-            <span className="field-label">Provedor</span>
-            <select
-              name="provider"
-              value={provider}
-              onChange={(event) =>
-                setProvider(event.target.value as ProviderId)
-              }
-            >
-              {providerCards.map((card) => (
-                <option key={card.id} value={card.id}>
-                  {card.title}
-                </option>
-              ))}
-            </select>
-          </label>
+          {scopedProvider ? (
+            <input type="hidden" name="provider" value={scopedProvider} />
+          ) : (
+            <label>
+              <span className="field-label">Provedor</span>
+              <select
+                name="provider"
+                value={provider}
+                onChange={(event) =>
+                  setProvider(event.target.value as ProviderId)
+                }
+              >
+                {providerCards.map((card) => (
+                  <option key={card.id} value={card.id}>
+                    {card.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label>
             <span className="field-label">Nome</span>
             <input name="name" required minLength={1} maxLength={120} />
@@ -672,6 +723,7 @@ export function WhatsappProviderPanel({
           ))
         )}
       </div>
+      </fieldset>
     </section>
   );
 }

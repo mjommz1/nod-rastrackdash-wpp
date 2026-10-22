@@ -11,7 +11,7 @@ O RastrackDash é um template self-hosted e multi-tenant para agências que oper
 ## O que vem na v1.0.0
 
 - Cliente de licença: ativação, heartbeat, status e soft-lock.
-- Provedores de WhatsApp: Uazapi BYO, NOD API, WAHA e Z-API; parsers inbound compatíveis.
+- Provedores de WhatsApp: Uazapi BYO e WhatsApp Cloud API para novas conexões (NOD API, WAHA e Z-API: "Em breve", só conexões já existentes); parsers inbound compatíveis.
 - Backoffice do aluno com checklist de onboarding e aba de licença somente leitura.
 - Whitelabel por variáveis de ambiente.
 - Script `pnpm setup` e guias para instalar, configurar e publicar a instância.

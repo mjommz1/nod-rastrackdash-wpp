@@ -46,6 +46,7 @@ enum WhatsappInstanceStatus {
 }
 
 enum DiagnosticSource {
+  kommo
   meta
   uazapi
   umbler
@@ -56,6 +57,8 @@ enum DiagnosticSource {
   waha
   zapi
   data_crazy
+  payt
+  unnichat
 }
 
 enum DiagnosticSeverity {
@@ -166,6 +169,16 @@ enum ConversionMatchMode {
 enum ProviderConversionRuleMode {
   observation
   production
+}
+
+/// Alcance de uma regra de conversao por provedor. "specific_numbers" e o
+/// comportamento historico (canais escolhidos em ProviderConversionRuleChannel);
+/// "all_numbers" avalia dinamicamente todo numero do workspace que suporte a
+/// origem da regra, inclusive numeros conectados depois. Uma regra especifica
+/// do mesmo evento/origem substitui a global naquele numero.
+enum ProviderConversionRuleScope {
+  all_numbers
+  specific_numbers
 }
 
 enum ProviderConversionEngineMode {
@@ -280,6 +293,8 @@ enum InboundWebhookProvider {
   uazapi
   meta_cloud
   data_crazy
+  payt
+  unnichat
 }
 
 enum InboundWebhookParserReleaseStatus {
@@ -298,6 +313,11 @@ enum InboundWebhookChannelStatus {
   discovered
   active
   paused
+}
+
+enum InboundWebhookMetaRoutingMode {
+  inherit_workspace
+  channel_override
 }
 
 enum InboundWebhookDeliveryStatus {
@@ -357,6 +377,13 @@ enum InboundWebhookReplaySelection {
   remaining
 }
 
+/// Moedas suportadas nas conversões e na correção por conta de anúncio.
+enum CurrencyCode {
+  BRL
+  USD
+  EUR
+}
+
 model User {
   id              String        @id @default(cuid())
   email           String        @unique
@@ -387,18 +414,21 @@ model User {
   createdProviderConversionRules   ProviderConversionRuleConfig[]    @relation("ProviderConversionRuleCreator")
   decidedPurchaseReviews           PurchaseReview[]                  @relation("PurchaseReviewDecisionActor")
   purchaseValueAdjustments         PurchaseValueAdjustment[]         @relation("PurchaseValueAdjustmentActor")
+  createdIntegrationEndpoints      IntegrationEndpoint[]             @relation("IntegrationEndpointCreator")
 
   @@index([lastWorkspaceId])
 }
 
 model Workspace {
-  id                String                     @id @default(cuid())
-  name              String
-  slug              String                     @unique
-  asaasCustomerId   String?
-  operationalStatus WorkspaceOperationalStatus @default(active)
-  createdAt         DateTime                   @default(now())
-  updatedAt         DateTime                   @updatedAt
+  id                 String                     @id @default(cuid())
+  name               String
+  slug               String                     @unique
+  asaasCustomerId    String?
+  operationalStatus  WorkspaceOperationalStatus @default(active)
+  /// "Moeda das conversões": padrão quando a venda e a regra não informam moeda.
+  conversionCurrency CurrencyCode               @default(BRL)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
 
   members                          WorkspaceMember[]
   invites                          WorkspaceInvite[]
@@ -444,6 +474,10 @@ model Workspace {
   providerConversionRules          ProviderConversionRuleConfig[]
   providerConversionRuleChannels   ProviderConversionRuleChannel[]
   providerConversionRuleEndpoints  ProviderConversionRuleEndpoint[]
+  integrationEndpoints             IntegrationEndpoint[]
+  integrationEndpointEvents        IntegrationEndpointEvent[]
+  providerRuleCreateClaims         ProviderRuleCreateClaim[]
+  providerPurchaseClaims           ProviderPurchaseClaim[]
   providerConversionExecutions     ProviderConversionRuleExecution[]
   providerConversionDecisions      ProviderConversionDecisionAudit[]
   providerConversionComparisons    ProviderConversionShadowComparison[]
@@ -453,6 +487,17 @@ model Workspace {
   purchaseReviews                  PurchaseReview[]
   purchaseReviewItems              PurchaseReviewItem[]
   purchaseValueAdjustments         PurchaseValueAdjustment[]
+  kommoConnections                 KommoConnection[]
+  kommoPipelineCatalog             KommoPipelineCatalog[]
+  kommoConversionRules             KommoConversionRule[]
+  kommoWebhookEvents               KommoWebhookEvent[]
+  kommoConversionDedupes           KommoConversionDedupe[]
+  pipedriveConnections             PipedriveConnection[]
+  pipedrivePipelineCatalog         PipedrivePipelineCatalog[]
+  pipedriveStageCatalog            PipedriveStageCatalog[]
+  pipedriveConversionRules         PipedriveConversionRule[]
+  pipedriveWebhookEvents           PipedriveWebhookEvent[]
+  pipedriveConversionDedupes       PipedriveConversionDedupe[]
   opsAlertSettings                 WorkspaceOpsAlertSettings?
   opsAlertDeliveries               WorkspaceOpsAlertDelivery[]
 
@@ -716,7 +761,10 @@ model ConversionEventLog {
   metaBusinessConnection    MetaBusinessConnection?    @relation(fields: [metaBusinessConnectionId], references: [id], onDelete: SetNull)
   metaConversionDestination MetaConversionDestination? @relation(fields: [metaConversionDestinationId], references: [id], onDelete: SetNull)
   diagnosticEvents          DiagnosticEvent[]
+  purchaseClaims            ProviderPurchaseClaim[]
+  pipedriveConversionDedupes PipedriveConversionDedupe[]
 
+  @@unique([workspaceId, id], map: "ConversionEventLog_workspace_id_key")
   @@index([workspaceId, status, createdAt])
   @@index([workspaceId, eventOccurredAt])
   @@index([workspaceId, eventName, eventOccurredAt])
@@ -956,40 +1004,100 @@ model ConversionRule {
   @@index([workspaceId, triggerType, triggerValue])
 }
 
+/// connectionId/parserReleaseId bind the rule to one inbound connection. They
+/// are always set for endpoint automations (Umbler: the callback is stored on
+/// that connection) and for every rule created before the workspace scope
+/// (Fase 3). Both are null only for message/catalog/label rules that span
+/// connections; then parser and production gates come from the connection of
+/// each occurrence.
 model ProviderConversionRuleConfig {
-  id                    String                                @id @default(cuid())
-  workspaceId           String
-  conversionRuleId      String
-  connectionId          String
-  parserReleaseId       String
-  mode                  ProviderConversionRuleMode            @default(observation)
-  messageTriggerPhrases String[]                              @default([])
-  messageAuthorScope    ProviderConversionMessageAuthorScope?
-  productionActivatedAt DateTime?
-  removedAt             DateTime?
-  createdByUserId       String?
-  createdAt             DateTime                              @default(now())
-  updatedAt             DateTime                              @updatedAt
+  id                        String                                @id @default(cuid())
+  workspaceId               String
+  conversionRuleId          String
+  connectionId              String?
+  parserReleaseId           String?
+  scope                     ProviderConversionRuleScope           @default(specific_numbers)
+  /// Set when "Unificar" replaced this rule by a workspace-wide one; the rule
+  /// is kept (paused) with its whole history.
+  unifiedIntoProviderRuleId String?
+  mode                      ProviderConversionRuleMode            @default(observation)
+  messageTriggerPhrases     String[]                              @default([])
+  messageAuthorScope        ProviderConversionMessageAuthorScope?
+  /// Fase 5.3: códigos de produto/oferta aceitos (vazio = qualquer produto).
+  /// Só plataformas de venda (Payt); comparados por código, sem caixa.
+  productFilterCodes        String[]                              @default([])
+  productionActivatedAt     DateTime?
+  removedAt                 DateTime?
+  createdByUserId           String?
+  createdAt                 DateTime                              @default(now())
+  updatedAt                 DateTime                              @updatedAt
 
   workspace       Workspace                            @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
   conversionRule  ConversionRule                       @relation(fields: [workspaceId, conversionRuleId], references: [workspaceId, id], onDelete: Restrict, map: "ProviderConversionRuleConfig_conversionRuleId_fkey")
-  connection      InboundWebhookConnection             @relation(fields: [workspaceId, connectionId], references: [workspaceId, id], onDelete: Restrict, map: "ProviderConversionRuleConfig_connectionId_fkey")
-  parserRelease   InboundWebhookParserRelease          @relation(fields: [parserReleaseId], references: [id], onDelete: Restrict)
+  connection      InboundWebhookConnection?            @relation(fields: [workspaceId, connectionId], references: [workspaceId, id], onDelete: Restrict, map: "ProviderConversionRuleConfig_connectionId_fkey")
+  parserRelease   InboundWebhookParserRelease?         @relation(fields: [parserReleaseId], references: [id], onDelete: Restrict)
   createdBy       User?                                @relation("ProviderConversionRuleCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  unifiedInto     ProviderConversionRuleConfig?        @relation("ProviderConversionRuleUnification", fields: [workspaceId, unifiedIntoProviderRuleId], references: [workspaceId, id], onDelete: Restrict, map: "ProviderConversionRuleConfig_unifiedIntoProviderRuleId_fkey")
+  unifiedRules    ProviderConversionRuleConfig[]       @relation("ProviderConversionRuleUnification")
   channels        ProviderConversionRuleChannel[]
   endpoint        ProviderConversionRuleEndpoint?
   catalog         ConversionCatalog?
   executions      ProviderConversionRuleExecution[]
   decisions       ProviderConversionDecisionAudit[]
   comparisons     ProviderConversionShadowComparison[]
+  createClaims    ProviderRuleCreateClaim[]
   purchaseReviews PurchaseReview[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, conversionRuleId])
   @@index([workspaceId, connectionId, mode])
   @@index([workspaceId, removedAt])
+  @@index([workspaceId, scope, removedAt], map: "ProviderConversionRuleConfig_workspaceId_scope_removedAt_idx")
+  @@index([workspaceId, unifiedIntoProviderRuleId], map: "ProviderConversionRuleConfig_workspaceId_unifiedInto_idx")
   @@index([parserReleaseId])
   @@index([createdByUserId])
+}
+
+/// Recibo duravel da criacao idempotente de regra (chave Idempotency-Key),
+/// mantido sem TTL. Nao guarda payload, URL nem segredo. connectionId nulo:
+/// regra criada sem vinculo com uma conexao (alcance do workspace).
+model ProviderRuleCreateClaim {
+  id               String   @id @default(cuid())
+  workspaceId      String
+  requestKey       String   @db.VarChar(128)
+  requestHash      String   @db.VarChar(64)
+  connectionId     String?
+  providerRuleId   String
+  endpointRequired Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  workspace    Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  connection   InboundWebhookConnection?    @relation(fields: [workspaceId, connectionId], references: [workspaceId, id], onDelete: Restrict, map: "ProviderRuleCreateClaim_connection_fkey")
+  providerRule ProviderConversionRuleConfig @relation(fields: [workspaceId, providerRuleId], references: [workspaceId, id], onDelete: Restrict, map: "ProviderRuleCreateClaim_rule_fkey")
+
+  @@unique([workspaceId, requestKey])
+  @@index([workspaceId, connectionId])
+  @@index([workspaceId, providerRuleId])
+}
+
+/// One durable winner per sale (seller + order + event) and effect mode.
+model ProviderPurchaseClaim {
+  id                   String    @id @default(cuid())
+  workspaceId          String
+  purchaseKey          String
+  effectMode           String
+  winnerExecutionId    String
+  conversionEventLogId String?
+  outboxPending        Boolean   @default(false)
+  outboxNextAttemptAt  DateTime?
+  createdAt            DateTime  @default(now())
+
+  workspace          Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  winnerExecution    ProviderConversionRuleExecution @relation(fields: [workspaceId, winnerExecutionId], references: [workspaceId, id], onDelete: Restrict)
+  conversionEventLog ConversionEventLog?             @relation(fields: [workspaceId, conversionEventLogId], references: [workspaceId, id], onDelete: Restrict)
+
+  @@unique([workspaceId, effectMode, purchaseKey], map: "ProviderPurchaseClaim_identity_key")
+  @@index([outboxPending, outboxNextAttemptAt, createdAt], map: "ProviderPurchaseClaim_outbox_recovery_idx")
 }
 
 model ProviderConversionRuleChannel {
@@ -1017,6 +1125,10 @@ model ProviderConversionRuleEndpoint {
   lastSuccessfulParseAt DateTime?
   rotatedAt             DateTime?
   removedAt             DateTime?
+  /// Fase 5.3 ("Desativar URL antiga"): a URL pública da regra responde 404,
+  /// mas o registro continua como âncora interna das entregas roteadas pela
+  /// URL única (auditoria e reprocessamento da regra). Reversível (null).
+  publicUrlDisabledAt   DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
@@ -1027,6 +1139,99 @@ model ProviderConversionRuleEndpoint {
   @@unique([workspaceId, id])
   @@unique([workspaceId, providerRuleId])
   @@index([workspaceId, removedAt])
+}
+
+enum IntegrationEndpointKind {
+  sales_platform
+  automation_event
+}
+
+/// Fase 5.3: URL única de uma integração no workspace. Plataforma de venda
+/// (Payt): uma URL por workspace; o evento vem do payload. Automação
+/// (Unnichat/Umbler): uma URL por evento, válida para todos os números. O
+/// roteador entrega cada callback ao processamento da regra dona.
+model IntegrationEndpoint {
+  id               String                  @id @default(cuid())
+  workspaceId      String
+  provider         InboundWebhookProvider
+  kind             IntegrationEndpointKind
+  /// Evento fixo da URL (automation_event); null na plataforma de venda.
+  eventName        String?
+  parserReleaseId  String
+  /// sha256 do token; a URL pública compara em tempo constante.
+  secretHash       String
+  /// Token cifrado (AES-GCM, chave dos payloads) para reexibir a URL com auditoria.
+  secretCiphertext String
+  secretIv         String
+  secretTag        String
+  secretKeyVersion Int
+  secretVersion    Int                     @default(1)
+  lastDeliveryAt   DateTime?
+  lastRoutedAt     DateTime?
+  rotatedAt        DateTime?
+  removedAt        DateTime?
+  createdByUserId  String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  workspace     Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  parserRelease InboundWebhookParserRelease @relation(fields: [parserReleaseId], references: [id], onDelete: Restrict)
+  createdBy     User?                       @relation("IntegrationEndpointCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  deliveries    InboundWebhookDelivery[]
+  events        IntegrationEndpointEvent[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, provider, removedAt])
+  @@index([parserReleaseId])
+  @@index([createdByUserId])
+}
+
+/// Fase 5.3: recibo idempotente de cada evento recebido por uma URL única,
+/// com o produto visto (produtos detectados) e o destino ou o motivo (vendas
+/// sem atribuição). routed* são referências de exibição, sem FK.
+model IntegrationEndpointEvent {
+  id                    String                 @id @default(cuid())
+  workspaceId           String
+  integrationEndpointId String
+  provider              InboundWebhookProvider
+  ingressKey            String
+  externalKey           String?
+  eventName             String?
+  providerStatus        String?
+  /// pending | routed | unattributed | ignored | invalid
+  status                String
+  reasonCode            String?
+  productCode           String?
+  productName           String?
+  offerCode             String?
+  offerName             String?
+  valueCents            Int?
+  currency              String?
+  contactIdentityHash   String?
+  occurredAt            DateTime?
+  firstReceivedAt       DateTime               @default(now())
+  lastReceivedAt        DateTime               @default(now())
+  attemptCount          Int                    @default(1)
+  routedProviderRuleId  String?
+  routedDeliveryId      String?
+  routedChannelId       String?
+  routingOutcome        String?
+  encryptedPayload      String?
+  payloadIv             String?
+  payloadTag            String?
+  encryptionKeyVersion  Int?
+  payloadExpiresAt      DateTime
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  workspace           Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  integrationEndpoint IntegrationEndpoint @relation(fields: [workspaceId, integrationEndpointId], references: [workspaceId, id], onDelete: Restrict, map: "IntegrationEndpointEvent_integrationEndpointId_fkey")
+
+  @@unique([workspaceId, id])
+  @@unique([integrationEndpointId, ingressKey], map: "IntegrationEndpointEvent_endpoint_ingress_key")
+  @@index([workspaceId, status, lastReceivedAt])
+  @@index([workspaceId, provider, productCode])
+  @@index([payloadExpiresAt])
 }
 
 model ConversionCatalog {
@@ -1125,6 +1330,7 @@ model ProviderConversionRuleExecution {
   matchedCatalogVariant ConversionCatalogVariant?        @relation(fields: [matchedCatalogVariantWorkspaceId, matchedCatalogVariantId], references: [workspaceId, id], onDelete: SetNull, map: "ProviderConversionRuleExecution_catalogVariantId_fkey")
   providerDecision      ProviderConversionDecisionAudit? @relation(fields: [providerDecisionWorkspaceId, providerDecisionId], references: [workspaceId, id], onDelete: SetNull, map: "ProviderConversionRuleExecution_providerDecisionId_fkey")
   purchaseReview        PurchaseReview?
+  purchaseClaims        ProviderPurchaseClaim[]
 
   @@unique([workspaceId, id])
   @@unique([providerRuleId, externalExecutionKey])
@@ -1274,6 +1480,7 @@ model Lead {
   whatsappInstance            WhatsappInstance?                 @relation(fields: [whatsappInstanceId], references: [id])
   purchaseReviews             PurchaseReview[]
   providerConversionDecisions ProviderConversionDecisionAudit[]
+  pipedriveWebhookEvents      PipedriveWebhookEvent[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, phoneHash])
@@ -1448,6 +1655,8 @@ model MetaReportingAccount {
   adAccountId             String
   adAccountName           String
   currency                String?
+  /// Correção manual da moeda do investimento. Efetiva = correção ?? currency ?? BRL.
+  currencyOverride        CurrencyCode?
   timezoneName            String?
   businessConnectionId    String?
   conversionDestinationId String?
@@ -1476,6 +1685,25 @@ model MetaReportingAccount {
   @@index([businessConnectionId])
   @@index([conversionDestinationId])
   @@index([businessId])
+}
+
+/// Cotação PTAX do Banco Central (venda, boletim de fechamento do dia):
+/// 1 baseCurrency = rate quoteCurrency. Hoje só USD e EUR contra BRL; USD<->EUR
+/// passa por BRL. Só é preenchida com PTAX_SYNC_ENABLED ligada (Fase 5.2).
+model ExchangeRate {
+  id            String       @id @default(cuid())
+  /// Dia do boletim (dia útil, horário de Brasília).
+  date          DateTime     @db.Date
+  baseCurrency  CurrencyCode
+  quoteCurrency CurrencyCode
+  rate          Decimal      @db.Decimal(18, 8)
+  source        String       @default("bcb_ptax")
+  bulletinAt    DateTime?
+  fetchedAt     DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+
+  @@unique([date, baseCurrency, quoteCurrency])
+  @@index([baseCurrency, quoteCurrency, date])
 }
 
 model MetaReportingAccountDestination {
@@ -1538,6 +1766,7 @@ model InboundWebhookParserRelease {
   certifiedBy             User?                          @relation("InboundWebhookParserReleaseCertifier", fields: [certifiedByUserId], references: [id], onDelete: SetNull)
   connections             InboundWebhookConnection[]
   providerConversionRules ProviderConversionRuleConfig[]
+  integrationEndpoints    IntegrationEndpoint[]
 
   @@unique([provider, version], map: "InboundWebhookParserRelease_provider_version_key")
   @@index([provider, status])
@@ -1568,6 +1797,7 @@ model InboundWebhookConnection {
   events                  InboundWebhookEvent[]
   replayBatches           InboundWebhookReplayBatch[]
   providerConversionRules ProviderConversionRuleConfig[]
+  ruleCreateClaims        ProviderRuleCreateClaim[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, removedAt])
@@ -1586,6 +1816,9 @@ model InboundWebhookChannel {
   channelName           String?
   status                InboundWebhookChannelStatus  @default(discovered)
   conversionEngineMode  ProviderConversionEngineMode @default(canonical)
+  /// NULL = number created before the routing mode existed (legacy: its saved
+  /// routes decide). New numbers start as inherit_workspace.
+  metaRoutingMode       InboundWebhookMetaRoutingMode? @default(inherit_workspace)
   productionActivatedAt DateTime?
   whatsappInstanceId    String?                      @unique
   firstSeenAt           DateTime                     @default(now())
@@ -1657,6 +1890,10 @@ model InboundWebhookDelivery {
   purpose                         InboundWebhookDeliveryPurpose      @default(message_observation)
   providerRuleEndpointWorkspaceId String?
   providerRuleEndpointId          String?
+  /// Fase 5.3: preenchido quando o callback chegou pela URL única do
+  /// workspace e foi roteado para esta regra.
+  integrationEndpointWorkspaceId  String?
+  integrationEndpointId           String?
   status                          InboundWebhookDeliveryStatus       @default(pending)
   classification                  InboundWebhookEventClassification?
   firstReceivedAt                 DateTime                           @default(now())
@@ -1680,6 +1917,7 @@ model InboundWebhookDelivery {
   workspace                     Workspace                            @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
   connection                    InboundWebhookConnection             @relation(fields: [workspaceId, connectionId], references: [workspaceId, id], onDelete: Restrict, map: "InboundWebhookDelivery_connectionId_fkey")
   providerRuleEndpoint          ProviderConversionRuleEndpoint?      @relation(fields: [providerRuleEndpointWorkspaceId, providerRuleEndpointId], references: [workspaceId, id], onDelete: SetNull, map: "InboundWebhookDelivery_providerRuleEndpointId_fkey")
+  integrationEndpoint           IntegrationEndpoint?                 @relation(fields: [integrationEndpointWorkspaceId, integrationEndpointId], references: [workspaceId, id], onDelete: SetNull, map: "InboundWebhookDelivery_integrationEndpointId_fkey")
   events                        InboundWebhookEvent[]
   providerConversionExecutions  ProviderConversionRuleExecution[]
   providerConversionDecisions   ProviderConversionDecisionAudit[]
@@ -1693,6 +1931,7 @@ model InboundWebhookDelivery {
   @@index([connectionId, lastReceivedAt])
   @@index([workspaceId, purpose, createdAt])
   @@index([providerRuleEndpointId])
+  @@index([integrationEndpointId])
   @@index([payloadExpiresAt], map: "InboundWebhookDelivery_payloadExpiresAt_idx")
   @@index([status, lastReceivedAt, queuedAt], map: "InboundWebhookDelivery_recovery_idx")
   @@index([externalDeliveryId])
@@ -2183,4 +2422,343 @@ model LicenseState {
   bound            Boolean   @default(false)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+}
+
+/// Kommo credentials are AEAD-encrypted server-side. Account identity is
+/// verified from the remote API, never accepted from a management request.
+model KommoConnection {
+  id                    String   @id
+  workspaceId           String
+  displayName           String
+  status                String   @default("blocked")
+  accountOrigin         String
+  verifiedAccountId     String?
+  accountSubdomain      String?
+  accessTokenEncrypted  String
+  accessTokenIv         String
+  accessTokenTag        String
+  credentialHealthy     Boolean  @default(false)
+  credentialGeneration  Int      @default(1)
+  allowedChannelRouteIds String[] @default([])
+  catalogState          String   @default("empty")
+  catalogRefreshedAt    DateTime?
+  lastErrorCode         String?
+  webhookSecretHash     String   @unique
+  webhookSecretVersion  Int      @default(1)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  workspace Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  pipelines KommoPipelineCatalog[]
+  rules     KommoConversionRule[]
+  events    KommoWebhookEvent[]
+
+  @@unique([workspaceId, verifiedAccountId])
+  @@index([workspaceId, status])
+}
+
+model KommoPipelineCatalog {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  connectionId String
+  pipelineId   String
+  pipelineName String
+  pipelineSort Int?
+  statusId     String
+  statusName   String
+  statusType   String?
+  available    Boolean  @default(true)
+  refreshedAt  DateTime @default(now())
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  connection KommoConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([connectionId, pipelineId, statusId])
+  @@index([connectionId, available])
+  @@index([workspaceId, connectionId])
+}
+
+/// Dedicated Pipedrive credentials: only AEAD ciphertext, IV and tag are
+/// persisted. Identity must be verified upstream; generation fences stale
+/// credential/catalog responses.
+model PipedriveConnection {
+  id                     String    @id
+  workspaceId            String
+  displayName            String
+  status                 String    @default("blocked")
+  accountOrigin          String
+  verifiedAccountId      String?
+  accountSubdomain       String?
+  accessTokenEncrypted   String
+  accessTokenIv          String
+  accessTokenTag         String
+  credentialHealthy      Boolean   @default(false)
+  credentialGeneration   Int       @default(1)
+  allowedChannelRouteIds String[]  @default([])
+  credentialActivatedAt  DateTime  @default(now())
+  webhookSecretHash      String?   @unique
+  webhookSecretVersion   Int       @default(0)
+  webhookIssuedAt        DateTime?
+  webhookRateWindowAt    DateTime?
+  webhookRateCount       Int       @default(0)
+  webhookLastReceivedAt  DateTime?
+  mutationRevision       Int       @default(0)
+  catalogState           String    @default("empty")
+  catalogRefreshedAt     DateTime?
+  lastErrorCode          String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  workspace Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  pipelines PipedrivePipelineCatalog[]
+  rules     PipedriveConversionRule[]
+  events    PipedriveWebhookEvent[]
+
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, verifiedAccountId])
+  @@index([workspaceId, status])
+}
+
+/// One row per upstream pipeline, including pipelines with zero stages.
+model PipedrivePipelineCatalog {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  connectionId String
+  pipelineId   String
+  pipelineName String
+  pipelineSort Int?
+  available    Boolean  @default(true)
+  refreshedAt  DateTime @default(now())
+
+  workspace  Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connection PipedriveConnection     @relation(fields: [connectionId, workspaceId], references: [id, workspaceId], onDelete: Restrict, onUpdate: Restrict)
+  stages     PipedriveStageCatalog[]
+
+  @@unique([connectionId, pipelineId])
+  @@unique([connectionId, workspaceId, pipelineId])
+  @@index([workspaceId, connectionId])
+  @@index([connectionId, available])
+}
+
+/// Composite ownership key ties a stage to its exact connection, workspace
+/// and pipeline.
+model PipedriveStageCatalog {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  connectionId String
+  pipelineId   String
+  stageId      String
+  stageName    String
+  stageSort    Int?
+  available    Boolean  @default(true)
+  refreshedAt  DateTime @default(now())
+
+  workspace Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  pipeline  PipedrivePipelineCatalog @relation(fields: [connectionId, workspaceId, pipelineId], references: [connectionId, workspaceId, pipelineId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([connectionId, pipelineId, stageId])
+  @@index([workspaceId, connectionId])
+  @@index([connectionId, pipelineId, available])
+}
+
+/// trigger "stage_change" requires stageId; "deal_won" has no stage, always
+/// Purchase, and is unique per pipeline (partial SQL index). Production
+/// activation is fenced by productionActivatedAt.
+model PipedriveConversionRule {
+  id                    String    @id @default(cuid())
+  workspaceId           String
+  connectionId          String
+  name                  String
+  trigger               String    @default("stage_change")
+  pipelineId            String
+  stageId               String?
+  eventName             String
+  mode                  String    @default("observation")
+  productionActivatedAt DateTime?
+  valueMode             String    @default("deal")
+  fixedValueCents       Int?
+  currency              String?
+  contentName           String?
+  active                Boolean   @default(true)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  workspace  Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connection PipedriveConnection @relation(fields: [connectionId, workspaceId], references: [id, workspaceId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([connectionId, pipelineId, stageId, eventName])
+  @@index([workspaceId, connectionId, active])
+}
+
+/// Durable inbox: reduced typed facts only, never the raw webhook/person/phone.
+/// changeKind is the parser classification: stage_change, deal_won, deal_lost
+/// (recorded only, never converts) or ignored (custom field/other edits).
+model PipedriveWebhookEvent {
+  id                   String    @id @default(cuid())
+  workspaceId          String
+  connectionId         String
+  deliveryKey          String
+  verifiedAccountId    String
+  accountSubdomain     String
+  credentialGeneration Int
+  webhookSecretVersion Int
+  changeKind           String    @default("ignored")
+  dealId               String?
+  pipelineId           String?
+  stageId              String?
+  oldStageId           String?
+  dealStatus           String?
+  previousDealStatus   String?
+  personId             String?
+  occurredAt           DateTime
+  valueCents           BigInt?
+  valuePresent         Boolean   @default(false)
+  currency             String?
+  status               String    @default("received")
+  errorCode            String?
+  attempts             Int       @default(0)
+  nextAttemptAt        DateTime?
+  leaseToken           String?
+  leaseExpiresAt       DateTime?
+  matchedLeadId        String?
+  matchedRouteId       String?
+  results              Json      @default("[]")
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  workspace   Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  connection  PipedriveConnection         @relation(fields: [connectionId, workspaceId], references: [id, workspaceId], onDelete: Restrict, onUpdate: Restrict)
+  matchedLead Lead?                       @relation(fields: [workspaceId, matchedLeadId], references: [workspaceId, id], onDelete: Restrict, onUpdate: Restrict)
+  dedupes     PipedriveConversionDedupe[]
+
+  @@unique([connectionId, deliveryKey])
+  @@unique([id, workspaceId, verifiedAccountId, dealId])
+  @@index([status, nextAttemptAt, leaseExpiresAt])
+  @@index([workspaceId, connectionId, createdAt])
+  @@index([workspaceId, verifiedAccountId, dealId, occurredAt])
+}
+
+/// Separate observation and production fences per deal + event. Production
+/// publication is a durable outbox; sender claims never expire when remote
+/// delivery may be unknown.
+model PipedriveConversionDedupe {
+  id                        String    @id @default(cuid())
+  workspaceId               String
+  verifiedAccountId         String
+  dealId                    String
+  eventName                 String
+  mode                      String    @default("observation")
+  sourceEventId             String
+  conversionEventLogId      String?
+  publicationIntent         Json?
+  publicationStatus         String    @default("observed")
+  publicationAttempts       Int       @default(0)
+  publicationNextAttemptAt  DateTime?
+  publicationLeaseToken     String?
+  publicationLeaseExpiresAt DateTime?
+  publicationErrorCode      String?
+  senderAttempts            Int       @default(0)
+  senderRetryable           Boolean   @default(false)
+  senderLeaseToken          String?
+  createdAt                 DateTime  @default(now())
+
+  workspace          Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  sourceEvent        PipedriveWebhookEvent @relation(fields: [sourceEventId, workspaceId, verifiedAccountId, dealId], references: [id, workspaceId, verifiedAccountId, dealId], onDelete: Restrict, onUpdate: Restrict)
+  conversionEventLog ConversionEventLog?   @relation(fields: [workspaceId, conversionEventLogId], references: [workspaceId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([workspaceId, verifiedAccountId, dealId, eventName, mode], map: "PipedriveConversionDedupe_semantic_mode_key")
+  @@index([workspaceId, sourceEventId])
+  @@index([publicationStatus, publicationNextAttemptAt], map: "PipedriveConversionDedupe_publication_idx")
+  @@index([workspaceId, conversionEventLogId], map: "PipedriveConversionDedupe_conversion_idx")
+}
+
+model KommoConversionRule {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  connectionId    String
+  name            String
+  pipelineId      String
+  statusId        String
+  eventName       String
+  mode            String   @default("observation")
+  valueMode       String   @default("lead_price")
+  fixedValueCents Int?
+  currency        String?
+  contentName     String?
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  connection KommoConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@unique([connectionId, pipelineId, statusId, eventName])
+  @@index([workspaceId, connectionId, active])
+}
+
+/// Durable ingress record. The delivery key is transport-level only; semantic
+/// conversion idempotency lives in KommoConversionDedupe below.
+model KommoWebhookEvent {
+  id                   String   @id @default(cuid())
+  workspaceId          String
+  connectionId         String
+  verifiedAccountId    String
+  credentialGeneration Int      @default(1)
+  deliveryKey          String   @unique
+  dealId               String
+  pipelineId           String
+  statusId             String
+  oldStatusId          String?
+  eventOccurredAt      DateTime
+  eventPriceCents      Int?
+  eventPricePresent    Boolean  @default(false)
+  status               String   @default("accepted")
+  errorCode            String?
+  attempts             Int      @default(0)
+  jobId                String?
+  matchedLeadId        String?
+  conversionEventLogId String?
+  processedAt          DateTime?
+  revision             Int      @default(0)
+  leaseToken           String?
+  leaseExpiresAt       DateTime?
+  nextAttemptAt        DateTime?
+  results              Json     @default("[]")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  connection KommoConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+
+  @@index([workspaceId, status, createdAt])
+  @@index([connectionId, dealId])
+}
+
+/// Semantic conversion fence: a rule edit, duplicate delivery, or reconnect
+/// cannot create a second conversion for the same verified deal and event.
+model KommoConversionDedupe {
+  id                        String   @id @default(cuid())
+  workspaceId               String
+  verifiedAccountId         String
+  dealId                    String
+  eventName                 String
+  sourceEventId             String
+  conversionEventLogId      String?
+  publicationIntent         Json?
+  publicationStatus         String   @default("materialized")
+  publicationAttempts       Int      @default(0)
+  publicationNextAttemptAt  DateTime?
+  publicationLeaseToken     String?
+  publicationLeaseExpiresAt DateTime?
+  publicationErrorCode      String?
+  senderAttempts            Int      @default(0)
+  senderRetryable           Boolean  @default(false)
+  senderLeaseToken          String?
+  createdAt                 DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+
+  @@unique([workspaceId, verifiedAccountId, dealId, eventName])
+  @@index([workspaceId, sourceEventId])
+  @@index([publicationStatus, publicationNextAttemptAt])
 }

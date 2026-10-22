@@ -96,7 +96,7 @@ describe("Meta Cloud inbound webhook connections", () => {
     expect(capabilities.providers).toContainEqual({
       provider: "meta_cloud",
       parserVersion: "v1",
-      parserReleaseStatus: "observation_only",
+      parserReleaseStatus: "certified",
       creationEnabled: true,
     });
   });

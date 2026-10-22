@@ -4,25 +4,80 @@ import type {
   AdSetReportOverviewDto,
   AdSetReportRowDto,
   CampaignReportRowDto,
+  CurrencyCode,
   CurrentWorkspaceDto,
+  ReportCurrencyGroupDto,
+  UnconvertedRevenueDto,
   MetaAssetsDto,
   MetaStructureReportDto,
   ReportOverviewDto,
   ReportFunnelStepDto,
   ReportPaginationDto,
+  ReportSortDto,
+  ReportSortKeyDto,
 } from "@wpptrack/shared";
 import { BarChart3, CalendarRange, Download, RefreshCcw } from "lucide-react";
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import type { ReactNode } from "react";
 import type { BackofficeActionState } from "../../../components/backoffice-action-form";
+import {
+  CurrencyKpiGroups,
+  ExchangeRateMissingNote,
+} from "../../../components/currency-kpi-groups";
 import { PresentationMask } from "../../../components/presentation-mask";
 import { SubmitButton } from "../../../components/submit-button";
+import {
+  joinAdAccountIds,
+  parseAdAccountIdsParam,
+  setAdAccountParams,
+  splitAdAccountIds,
+} from "../../../lib/ad-account-params";
+import {
+  adAccountCurrencyMap,
+  getAdAccountCurrencies,
+} from "../../../lib/currency-settings";
+import {
+  currencyKpiGroup,
+  exchangeRateMissingHint,
+  exchangeRateMissingLabel,
+  formatReportMoney,
+  mixedCurrencyGroups,
+  reportCurrency,
+  rowCurrency,
+  singleCurrencyRateGap,
+  unconvertedRevenueLabel,
+} from "../../../lib/report-currency";
 import { isApiRequestError, serverApiFetch } from "../../../lib/server-api";
 import { getCurrentWorkspace } from "../../../lib/current-workspace";
 import { MetaEntityControls } from "./meta-entity-controls";
 import { MetaReportFilters } from "./meta-report-filters";
 import { ReportAdPreview } from "./report-ad-preview";
+import {
+  REPORT_INSIGHT_FETCH_SIZE,
+  parseReportInsightObjective,
+  reportInsightObjectiveKeys,
+  reportInsightSorts,
+  type ReportInsightMetrics,
+  type ReportInsightObjective,
+} from "./report-insights";
+import {
+  ReportInsightsPanel,
+  type ReportInsightFetch,
+  type ReportInsightRow,
+} from "./report-insights-panel";
+import {
+  ReportSortHeader,
+  ReportSortToolbar,
+  type ReportSortAction,
+} from "./report-sort-controls";
+import {
+  nextReportSort,
+  parseReportSort,
+  reportSortColumnKeys,
+  reportSortVisibleInMetricGroup,
+} from "./report-sort";
 import {
   ReportPageSelectionCheckbox,
   ReportSelectionCheckbox,
@@ -37,6 +92,7 @@ import {
 
 type ReportsSearchParams = Record<string, string | string[] | undefined>;
 type ReportView = "campaigns" | "adsets" | "ads";
+type ReportMode = "table" | "insights";
 type ReportMetricGroup = "overview" | "traffic" | "funnel" | "revenue";
 type ReportFetchState = "real" | "empty" | "error";
 type CampaignReportsResult = {
@@ -122,6 +178,7 @@ type WorkspaceFetchResult = {
   state: "real" | "error";
 };
 type ReportFilters = {
+  /** Contas de anúncio juntas por "," (`adAccountId` ou `adAccountIds` na URL). */
   adAccountId?: string;
   adId?: string;
   adSetId?: string;
@@ -133,24 +190,61 @@ type ReportFilters = {
   nameContains?: string;
   nameScope?: string;
   metrics?: ReportMetricGroup;
+  mode?: ReportMode;
+  objective?: ReportInsightObjective;
   page?: number;
   pageSize?: number;
   since?: string;
   selectedIds?: string;
+  sort?: ReportSortDto;
   status?: string;
   until?: string;
   whatsappClassification?: string;
 };
+type ReportSortColumn = {
+  cost: ReportSortAction;
+  count: ReportSortAction;
+};
 
-function money(cents: number | null) {
-  if (cents === null) {
-    return "-";
-  }
+/** Dinheiro na moeda da linha ou do recorte (BRL quando tudo é em real). */
+function money(cents: number | null, currency: CurrencyCode = "BRL") {
+  return formatReportMoney(cents, currency);
+}
 
-  return (cents / 100).toLocaleString("pt-BR", {
-    currency: "BRL",
-    style: "currency",
-  });
+type RateGap = {
+  exchangeRateMissing: boolean;
+  unconvertedRevenue: UnconvertedRevenueDto[];
+};
+
+const noRateGap: RateGap = {
+  exchangeRateMissing: false,
+  unconvertedRevenue: [],
+};
+
+/** ROAS, ou "sem cotação" quando parte da receita não pôde ser convertida. */
+function roasOrMissing(value: number | null, rateMissing: boolean): ReactNode {
+  return rateMissing ? (
+    <span className="report-rate-missing" title={exchangeRateMissingHint}>
+      {exchangeRateMissingLabel}
+    </span>
+  ) : (
+    roas(value)
+  );
+}
+
+/** Receita que ficou fora por falta de cotação, na moeda original. */
+function UnconvertedRevenueSpan({
+  unconverted,
+}: {
+  unconverted: readonly UnconvertedRevenueDto[] | undefined;
+}) {
+  const label = unconvertedRevenueLabel(unconverted);
+
+  return label ? (
+    <span className="report-unconverted" title={exchangeRateMissingHint}>
+      + {label} sem cotação
+    </span>
+  ) : null;
 }
 
 function roas(value: number | null) {
@@ -163,6 +257,8 @@ function roas(value: number | null) {
     minimumFractionDigits: 0,
   })}x`;
 }
+
+const roasText = roas;
 
 function percent(value: number | null) {
   if (value === null) {
@@ -271,6 +367,120 @@ async function getAdReports(filters: ReportFilters): Promise<AdReportsResult> {
   }
 }
 
+/**
+ * Totais do filtro para os rankings de insights, com a moeda do relatório
+ * (`null` quando o filtro mistura moedas: o custo nunca é comparado).
+ */
+function insightTotals(
+  report: Parameters<typeof reportCurrency>[0] & {
+    totals?: ReportInsightMetrics;
+  },
+): ReportInsightMetrics | undefined {
+  return report.totals
+    ? {
+        ...report.totals,
+        currency:
+          mixedCurrencyGroups(report).length > 0
+            ? null
+            : reportCurrency(report),
+      }
+    : undefined;
+}
+
+type ReportInsightsResult = {
+  cost: ReportInsightFetch;
+  report:
+    ReportOverviewDto | AdSetReportOverviewDto | AdReportOverviewDto | null;
+  volume: ReportInsightFetch;
+};
+
+async function getReportInsightRanking(
+  view: ReportView,
+  filters: ReportFilters,
+  sort: ReportSortDto,
+): Promise<{
+  fetch: ReportInsightFetch;
+  report:
+    ReportOverviewDto | AdSetReportOverviewDto | AdReportOverviewDto | null;
+}> {
+  // Rankings read the head of the API ordering, which is applied to the whole
+  // filtered population before pagination; the table page is never reused.
+  const query = reportQuery({
+    ...filters,
+    page: 1,
+    pageSize: REPORT_INSIGHT_FETCH_SIZE,
+    sort,
+  });
+
+  try {
+    if (view === "adsets") {
+      const report = await serverApiFetch<AdSetReportOverviewDto>(
+        `/reports/adsets?${query}`,
+      );
+
+      return {
+        fetch: {
+          state: "real",
+          pagination: report.pagination,
+          rows: report.adSets,
+          totals: insightTotals(report),
+        },
+        report,
+      };
+    }
+
+    if (view === "ads") {
+      const report = await serverApiFetch<AdReportOverviewDto>(
+        `/reports/ads?${query}`,
+      );
+
+      return {
+        fetch: {
+          state: "real",
+          pagination: report.pagination,
+          rows: report.ads,
+          totals: insightTotals(report),
+        },
+        report,
+      };
+    }
+
+    const report = await serverApiFetch<ReportOverviewDto>(
+      `/reports/campaigns?${query}`,
+    );
+
+    return {
+      fetch: {
+        state: "real",
+        pagination: report.pagination,
+        rows: report.campaigns,
+        totals: insightTotals(report),
+      },
+      report,
+    };
+  } catch {
+    return { fetch: { state: "error" }, report: null };
+  }
+}
+
+async function getReportInsights(
+  view: ReportView,
+  filters: ReportFilters,
+  objective: ReportInsightObjective,
+): Promise<ReportInsightsResult> {
+  const sorts = reportInsightSorts(objective);
+  const [volume, cost] = await Promise.all([
+    getReportInsightRanking(view, filters, sorts.volume),
+    getReportInsightRanking(view, filters, sorts.cost),
+  ]);
+
+  return {
+    cost: cost.fetch,
+    report: volume.report ?? cost.report,
+    volume: volume.fetch,
+  };
+}
+
 async function getMetaStructureReport(): Promise<MetaStructureReportDto | null> {
   try {
     return await serverApiFetch<MetaStructureReportDto>(
@@ -330,9 +540,7 @@ function reportQuery(
     params.set("businessId", filters.businessId);
   }
 
-  if (filters.adAccountId) {
-    params.set("adAccountId", filters.adAccountId);
-  }
+  setAdAccountParams(params, splitAdAccountIds(filters.adAccountId));
 
   if (filters.campaignId) {
     params.set("campaignId", filters.campaignId);
@@ -375,6 +583,11 @@ function reportQuery(
     params.set("pageSize", String(filters.pageSize));
   }
 
+  if (includePagination && filters.sort) {
+    params.set("sort", filters.sort.key);
+    params.set("dir", filters.sort.direction);
+  }
+
   return params.toString();
 }
 
@@ -391,7 +604,6 @@ async function syncMetaReports(formData: FormData) {
     "compareSince",
     "compareUntil",
     "businessId",
-    "adAccountId",
     "campaignId",
     "adSetId",
     "adId",
@@ -403,7 +615,11 @@ async function syncMetaReports(formData: FormData) {
     "whatsappClassification",
     "view",
     "metrics",
+    "mode",
+    "objective",
     "pageSize",
+    "sort",
+    "dir",
   ]) {
     const value = formText(formData, key);
 
@@ -411,6 +627,14 @@ async function syncMetaReports(formData: FormData) {
       redirectParams.set(key, value);
     }
   }
+
+  setAdAccountParams(
+    redirectParams,
+    parseAdAccountIdsParam(
+      formText(formData, "adAccountId"),
+      formText(formData, "adAccountIds"),
+    ),
+  );
 
   try {
     const params = new URLSearchParams();
@@ -612,6 +836,10 @@ function reportView(value?: string): ReportView {
   return value === "adsets" || value === "ads" ? value : "campaigns";
 }
 
+function reportMode(value?: string): ReportMode {
+  return value === "insights" ? value : "table";
+}
+
 function reportMetricGroup(value?: string): ReportMetricGroup {
   return value === "traffic" || value === "funnel" || value === "revenue"
     ? value
@@ -730,9 +958,7 @@ function leadsHref(filters: {
     params.set("businessId", filters.businessId);
   }
 
-  if (filters.adAccountId) {
-    params.set("adAccountId", filters.adAccountId);
-  }
+  setAdAccountParams(params, splitAdAccountIds(filters.adAccountId));
 
   if (filters.whatsappClassification) {
     params.set("whatsappClassification", filters.whatsappClassification);
@@ -761,6 +987,14 @@ function applyReportUiParams(
 ): URLSearchParams {
   if (filters.metrics && filters.metrics !== "overview") {
     params.set("metrics", filters.metrics);
+  }
+
+  if (filters.mode === "insights") {
+    params.set("mode", filters.mode);
+
+    if (filters.objective && filters.objective !== "real_conversations") {
+      params.set("objective", filters.objective);
+    }
   }
 
   return params;
@@ -795,8 +1029,12 @@ function reportMetricGroupHref(
   view: ReportView,
   filters: ReportFilters,
 ): string {
+  const sort =
+    filters.sort && reportSortVisibleInMetricGroup(filters.sort.key, metrics)
+      ? filters.sort
+      : undefined;
   const params = new URLSearchParams(
-    reportQuery({ ...filters, page: 1 }, true),
+    reportQuery({ ...filters, page: 1, sort }, true),
   );
 
   params.set("view", view);
@@ -806,6 +1044,108 @@ function reportMetricGroupHref(
   }
 
   return `/reports?${params.toString()}`;
+}
+
+function reportSortAction(
+  view: ReportView,
+  filters: ReportFilters,
+  key: ReportSortKeyDto,
+  label: string,
+): ReportSortAction {
+  const active = filters.sort?.key === key;
+
+  return {
+    active,
+    direction: active && filters.sort ? filters.sort.direction : "desc",
+    href: reportPageHref(
+      view,
+      { ...filters, sort: nextReportSort(filters.sort, key) },
+      1,
+    ),
+    label,
+  };
+}
+
+function reportSortColumn(
+  view: ReportView,
+  filters: ReportFilters,
+  step: ReportFunnelStepDto,
+): ReportSortColumn | null {
+  const keys = reportSortColumnKeys(step.key);
+
+  if (!keys) {
+    return null;
+  }
+
+  return {
+    count: reportSortAction(view, filters, keys.count, step.label),
+    cost: reportSortAction(view, filters, keys.cost, `Custo por ${step.label}`),
+  };
+}
+
+/**
+ * Contas de anúncio num formulário: `adAccountId` com uma conta,
+ * `adAccountIds` com duas ou mais (mesmo formato da URL).
+ */
+function AdAccountHiddenInput({ value }: { value?: string }) {
+  const ids = splitAdAccountIds(value);
+
+  return (
+    <input
+      type="hidden"
+      name={ids.length > 1 ? "adAccountIds" : "adAccountId"}
+      value={ids.join(",")}
+    />
+  );
+}
+
+function ReportSortHiddenInputs({ sort }: { sort?: ReportSortDto }) {
+  if (!sort) {
+    return null;
+  }
+
+  return (
+    <>
+      <input type="hidden" name="sort" value={sort.key} />
+      <input type="hidden" name="dir" value={sort.direction} />
+    </>
+  );
+}
+
+function ReportModeHiddenInputs({
+  mode,
+  objective,
+}: {
+  mode: ReportMode;
+  objective: ReportInsightObjective;
+}) {
+  if (mode !== "insights") {
+    return null;
+  }
+
+  return (
+    <>
+      <input type="hidden" name="mode" value={mode} />
+      <input type="hidden" name="objective" value={objective} />
+    </>
+  );
+}
+
+function reportInsightTableHref(
+  view: ReportView,
+  filters: ReportFilters,
+  sort: ReportSortDto,
+): string {
+  const metrics =
+    filters.metrics && reportSortVisibleInMetricGroup(sort.key, filters.metrics)
+      ? filters.metrics
+      : "overview";
+
+  return reportPageHref(
+    view,
+    { ...filters, metrics, mode: undefined, objective: undefined, sort },
+    1,
+  );
 }
 
 const campaignSummaryCopy: ReportEntityCopy = {
@@ -851,16 +1191,23 @@ const adSummaryCopy: ReportEntityCopy = {
 };
 
 function PerformanceMetricsCells({
+  currency: reportCurrencyCode,
   funnelSteps,
   metricGroup,
   row,
   realConversationsHref,
 }: {
+  /** Moeda do relatório, para linhas que não trazem a própria. */
+  currency: CurrencyCode;
   funnelSteps: ReportFunnelStepDto[];
   metricGroup: ReportMetricGroup;
   row: PerformanceRow;
   realConversationsHref: string;
 }) {
+  // Cada linha mostra o dinheiro na moeda da própria conta de anúncio.
+  const currency = rowCurrency(row, reportCurrencyCode);
+  const money = (cents: number | null) => formatReportMoney(cents, currency);
+  const rateMissing = row.exchangeRateMissing === true;
   const rowSteps = new Map(row.funnelSteps.map((step) => [step.key, step]));
   const showOverview = metricGroup === "overview";
   const showTraffic = metricGroup === "traffic";
@@ -909,6 +1256,7 @@ function PerformanceMetricsCells({
       {showOverview || showRevenue ? (
         <td data-label="Receita de trafego">
           {money(row.trafficRevenueCents)}
+          <UnconvertedRevenueSpan unconverted={row.unconvertedRevenue} />
         </td>
       ) : null}
       {showRevenue ? (
@@ -919,26 +1267,36 @@ function PerformanceMetricsCells({
           <td data-label="Receita de recompra">
             {money(row.repurchaseRevenueCents)}
           </td>
-          <td data-label="Receita total">{money(row.totalRevenueCents)}</td>
+          <td data-label="Receita total">
+            {money(row.totalRevenueCents)}
+            <UnconvertedRevenueSpan unconverted={row.unconvertedRevenue} />
+          </td>
         </>
       ) : null}
       {showOverview || showRevenue ? (
-        <td data-label="ROAS de aquisicao">{roas(row.roasAcquisition)}</td>
+        <td data-label="ROAS de aquisicao">
+          {roasOrMissing(row.roasAcquisition, rateMissing)}
+        </td>
       ) : null}
       {showRevenue ? (
-        <td data-label="ROAS com recompra">{roas(row.roasWithRepurchase)}</td>
+        <td data-label="ROAS com recompra">
+          {roasOrMissing(row.roasWithRepurchase, rateMissing)}
+        </td>
       ) : null}
     </>
   );
 }
 
 function EmptyPerformanceCells({
+  currency,
   funnelSteps,
   metricGroup,
 }: {
+  currency: CurrencyCode;
   funnelSteps: ReportFunnelStepDto[];
   metricGroup: ReportMetricGroup;
 }) {
+  const money = (cents: number) => formatReportMoney(cents, currency);
   const showOverview = metricGroup === "overview";
   const showTraffic = metricGroup === "traffic";
   const showFunnel = metricGroup === "funnel";
@@ -1370,12 +1728,18 @@ function reportEntitySummary(
 }
 
 function SummaryMetricsCells({
+  currency,
   metricGroup,
+  rateGap = noRateGap,
   totals,
 }: {
+  currency: CurrencyCode;
   metricGroup: ReportMetricGroup;
+  /** Receita que ficou fora do total por falta de cotação (se houve). */
+  rateGap?: RateGap;
   totals: ReportTotals;
 }) {
+  const money = (cents: number | null) => formatReportMoney(cents, currency);
   const showOverview = metricGroup === "overview";
   const showTraffic = metricGroup === "traffic";
   const showFunnel = metricGroup === "funnel";
@@ -1406,6 +1770,7 @@ function SummaryMetricsCells({
       {showOverview || showRevenue ? (
         <td data-label="Receita de trafego">
           {money(totals.trafficRevenueCents)}
+          <UnconvertedRevenueSpan unconverted={rateGap.unconvertedRevenue} />
         </td>
       ) : null}
       {showRevenue ? (
@@ -1416,27 +1781,50 @@ function SummaryMetricsCells({
           <td data-label="Receita de recompra">
             {money(totals.repurchaseRevenueCents)}
           </td>
-          <td data-label="Receita total">{money(totals.totalRevenueCents)}</td>
+          <td data-label="Receita total">
+            {money(totals.totalRevenueCents)}
+            <UnconvertedRevenueSpan unconverted={rateGap.unconvertedRevenue} />
+          </td>
         </>
       ) : null}
       {showOverview || showRevenue ? (
-        <td data-label="ROAS de aquisicao">{roas(totals.roasAcquisition)}</td>
+        <td data-label="ROAS de aquisicao">
+          {roasOrMissing(totals.roasAcquisition, rateGap.exchangeRateMissing)}
+        </td>
       ) : null}
       {showRevenue ? (
         <td data-label="ROAS com recompra">
-          {roas(totals.roasWithRepurchase)}
+          {roasOrMissing(
+            totals.roasWithRepurchase,
+            rateGap.exchangeRateMissing,
+          )}
         </td>
       ) : null}
     </>
   );
 }
 
+function visibleReportFunnelSteps(
+  funnelSteps: ReportFunnelStepDto[],
+  metricGroup: ReportMetricGroup,
+): ReportFunnelStepDto[] {
+  if (metricGroup === "traffic") {
+    return funnelSteps.filter((step) => step.key === "real_conversations");
+  }
+
+  return metricGroup === "overview" || metricGroup === "funnel"
+    ? funnelSteps
+    : [];
+}
+
 function PerformanceMetricHeaders({
   funnelSteps,
   metricGroup,
+  sortColumn,
 }: {
   funnelSteps: ReportFunnelStepDto[];
   metricGroup: ReportMetricGroup;
+  sortColumn: (step: ReportFunnelStepDto) => ReportSortColumn | null;
 }) {
   const showOverview = metricGroup === "overview";
   const showTraffic = metricGroup === "traffic";
@@ -1452,9 +1840,20 @@ function PerformanceMetricHeaders({
     <>
       <th>Investimento</th>
       {showOverview || showTraffic ? <th>Conversas Meta</th> : null}
-      {visibleFunnelSteps.map((step) => (
-        <th key={step.key}>{step.label}</th>
-      ))}
+      {visibleFunnelSteps.map((step) => {
+        const column = sortColumn(step);
+
+        return column ? (
+          <ReportSortHeader
+            cost={column.cost}
+            count={column.count}
+            key={step.key}
+            label={step.label}
+          />
+        ) : (
+          <th key={step.key}>{step.label}</th>
+        );
+      })}
       {showTraffic ? <th>Total recebido</th> : null}
       {showOverview || showRevenue ? <th>Receita trafego</th> : null}
       {showRevenue ? (
@@ -1470,44 +1869,112 @@ function PerformanceMetricHeaders({
   );
 }
 
+/**
+ * Linhas da página agrupadas por moeda (subtotal quando a API não mandou
+ * totais): dinheiro de moedas diferentes nunca é somado.
+ */
+function rowsByCurrency(
+  rows: PerformanceRow[],
+  fallback: CurrencyCode,
+): Array<{ currency: CurrencyCode; rows: PerformanceRow[] }> {
+  const groups = new Map<CurrencyCode, PerformanceRow[]>();
+
+  for (const row of rows) {
+    const currency = rowCurrency(row, fallback);
+    groups.set(currency, [...(groups.get(currency) ?? []), row]);
+  }
+
+  return [...groups].map(([currency, groupRows]) => ({
+    currency,
+    rows: groupRows,
+  }));
+}
+
 function PerformanceSummaryFooter({
   copy,
+  currency,
+  currencyGroups = [],
   metricGroup,
   pagination,
+  rateGap = noRateGap,
   rows,
   totals,
 }: {
   copy: ReportEntityCopy;
+  /** Moeda do relatório (recorte de uma moeda só). */
+  currency: CurrencyCode;
+  /** Um total por moeda quando o filtro mistura moedas. */
+  currencyGroups?: ReportCurrencyGroupDto[];
   metricGroup: ReportMetricGroup;
   pagination?: ReportPaginationDto;
+  /** Cotação que faltou no recorte de uma moeda só. */
+  rateGap?: RateGap;
   rows: PerformanceRow[];
   totals?: ReportTotals;
 }) {
-  const summaryTotals = totals ?? reportTotals(rows);
   const hasFilteredTotals = Boolean(totals);
+  const pageGroups = totals ? [] : rowsByCurrency(rows, currency);
+  const lines: Array<{
+    currency: CurrencyCode;
+    rateGap: RateGap;
+    totals: ReportTotals;
+  }> =
+    currencyGroups.length > 0
+      ? currencyGroups.map((group) => ({
+          currency: group.currency,
+          rateGap: {
+            exchangeRateMissing: group.exchangeRateMissing,
+            unconvertedRevenue: group.unconvertedRevenue,
+          },
+          totals: group,
+        }))
+      : pageGroups.length > 1
+        ? pageGroups.map((group) => ({
+            currency: group.currency,
+            rateGap: noRateGap,
+            totals: reportTotals(group.rows),
+          }))
+        : [{ currency, rateGap, totals: totals ?? reportTotals(rows) }];
+  const perCurrency = lines.length > 1;
 
   return (
     <tfoot className="report-summary">
-      <tr>
-        <td className="performance-name-cell summary-name" data-label="Resumo">
-          <strong>
-            {hasFilteredTotals
-              ? "Total do filtro"
-              : pagination
-                ? `Subtotal da pagina ${pagination.page}`
-                : copy.title}
-          </strong>
-          <span>
-            {pagination
-              ? `${rows.length} nesta pagina de ${countLabel(pagination.totalItems, copy.singular, copy.plural)} no filtro`
-              : reportEntitySummary(rows, copy)}
-          </span>
-        </td>
-        <SummaryMetricsCells metricGroup={metricGroup} totals={summaryTotals} />
-        <td className="performance-review-cell" data-label="Revisao WhatsApp">
-          <span className="tag">Total</span>
-        </td>
-      </tr>
+      {lines.map((line) => (
+        <tr
+          data-currency={perCurrency ? line.currency : undefined}
+          key={line.currency}
+        >
+          <td
+            className="performance-name-cell summary-name"
+            data-label="Resumo"
+          >
+            <strong>
+              {hasFilteredTotals
+                ? "Total do filtro"
+                : pagination
+                  ? `Subtotal da pagina ${pagination.page}`
+                  : copy.title}
+              {perCurrency ? ` · ${line.currency}` : ""}
+            </strong>
+            <span>
+              {perCurrency
+                ? "Contas nesta moeda; moedas diferentes não são somadas"
+                : pagination
+                  ? `${rows.length} nesta pagina de ${countLabel(pagination.totalItems, copy.singular, copy.plural)} no filtro`
+                  : reportEntitySummary(rows, copy)}
+            </span>
+          </td>
+          <SummaryMetricsCells
+            currency={line.currency}
+            metricGroup={metricGroup}
+            rateGap={line.rateGap}
+            totals={line.totals}
+          />
+          <td className="performance-review-cell" data-label="Revisao WhatsApp">
+            <span className="tag">{perCurrency ? line.currency : "Total"}</span>
+          </td>
+        </tr>
+      ))}
     </tfoot>
   );
 }
@@ -1615,14 +2082,34 @@ function ComparisonMetric({
 }
 
 function ReportComparisonMetrics({
-  current,
+  currency,
+  current: currentTotals,
   metricGroup,
-  previous,
+  mixedCurrency = false,
+  previous: previousTotals,
 }: {
+  currency: CurrencyCode;
   current: ReportTotals;
   metricGroup: ReportMetricGroup;
+  /** Um dos períodos mistura moedas: a comparação em dinheiro não aparece. */
+  mixedCurrency?: boolean;
   previous: ReportTotals;
 }) {
+  const money = (cents: number) => formatReportMoney(cents, currency);
+  const hideMoney = (totals: ReportTotals): ReportTotals =>
+    mixedCurrency
+      ? ({
+          ...totals,
+          spendCents: null,
+          trafficRevenueCents: null,
+          firstPurchaseRevenueCents: null,
+          repurchaseRevenueCents: null,
+          roasAcquisition: null,
+        } as unknown as ReportTotals)
+      : totals;
+  const current = hideMoney(currentTotals);
+  const previous = hideMoney(previousTotals);
+
   if (metricGroup === "traffic") {
     return (
       <>
@@ -1638,7 +2125,7 @@ function ReportComparisonMetrics({
           previous={previous.metaConversationsStarted}
         />
         <ComparisonMetric
-          label="Conversas reais"
+          label="Leads novos"
           current={current.realConversations}
           previous={previous.realConversations}
         />
@@ -1656,7 +2143,7 @@ function ReportComparisonMetrics({
     return (
       <>
         <ComparisonMetric
-          label="Conversas reais"
+          label="Leads novos"
           current={current.realConversations}
           previous={previous.realConversations}
         />
@@ -1735,7 +2222,7 @@ function ReportComparisonMetrics({
         previous={previous.metaConversationsStarted}
       />
       <ComparisonMetric
-        label="Conversas reais"
+        label="Leads novos"
         current={current.realConversations}
         previous={previous.realConversations}
       />
@@ -1758,7 +2245,20 @@ function ReportComparisonMetrics({
 function reportSummaryMetrics(
   metricGroup: ReportMetricGroup,
   totals: ReportTotals,
+  currency: CurrencyCode = "BRL",
+  mixedCurrency = false,
+  rateMissing = false,
 ): Array<{ detail: string; label: string; value: string }> {
+  // Moedas misturadas: dinheiro e ROAS ficam nos blocos por moeda, abaixo.
+  const money = (cents: number) =>
+    mixedCurrency ? "Por moeda" : formatReportMoney(cents, currency);
+  const roas = (value: number | null) =>
+    mixedCurrency
+      ? "Por moeda"
+      : rateMissing
+        ? exchangeRateMissingLabel
+        : roasText(value);
+
   if (metricGroup === "traffic") {
     return [
       {
@@ -1772,8 +2272,8 @@ function reportSummaryMetrics(
         value: String(totals.metaConversationsStarted),
       },
       {
-        detail: "Identificadas no WhatsApp",
-        label: "Conversas reais",
+        detail: "1º contato no período",
+        label: "Leads novos",
         value: String(totals.realConversations),
       },
       {
@@ -1787,8 +2287,8 @@ function reportSummaryMetrics(
   if (metricGroup === "funnel") {
     return [
       {
-        detail: "Base rastreada",
-        label: "Conversas reais",
+        detail: "1º contato no período",
+        label: "Leads novos",
         value: String(totals.realConversations),
       },
       {
@@ -1846,8 +2346,8 @@ function reportSummaryMetrics(
       value: String(totals.metaConversationsStarted),
     },
     {
-      detail: "Identificadas no WhatsApp",
-      label: "Conversas reais",
+      detail: "1º contato no período",
+      label: "Leads novos",
       value: String(totals.realConversations),
     },
     {
@@ -1869,7 +2369,13 @@ export default async function ReportsPage({
   const compareSince = asStringParam(resolvedSearchParams.compareSince);
   const compareUntil = asStringParam(resolvedSearchParams.compareUntil);
   const businessId = asStringParam(resolvedSearchParams.businessId);
-  const adAccountId = asStringParam(resolvedSearchParams.adAccountId);
+  const adAccountId =
+    joinAdAccountIds(
+      parseAdAccountIdsParam(
+        resolvedSearchParams.adAccountId,
+        resolvedSearchParams.adAccountIds,
+      ),
+    ) || undefined;
   const campaignId = asStringParam(resolvedSearchParams.campaignId);
   const adSetId = asStringParam(resolvedSearchParams.adSetId);
   const adId = asStringParam(resolvedSearchParams.adId);
@@ -1883,12 +2389,22 @@ export default async function ReportsPage({
     asStringParam(resolvedSearchParams.selectedIds),
   );
   const activeView = reportView(asStringParam(resolvedSearchParams.view));
+  const activeMode = reportMode(asStringParam(resolvedSearchParams.mode));
+  const insightObjective = parseReportInsightObjective(
+    asStringParam(resolvedSearchParams.objective),
+  );
+  const showTable = activeMode === "table";
   const activeMetricGroup = reportMetricGroup(
     asStringParam(resolvedSearchParams.metrics),
   );
   const page = positiveIntegerParam(
     asStringParam(resolvedSearchParams.page),
     1,
+  );
+  const sort = parseReportSort(
+    asStringParam(resolvedSearchParams.sort),
+    asStringParam(resolvedSearchParams.dir),
+    activeMetricGroup,
   );
   const pageSize = Math.min(
     positiveIntegerParam(asStringParam(resolvedSearchParams.pageSize), 10),
@@ -1927,8 +2443,11 @@ export default async function ReportsPage({
     status,
     delivery,
     selectedIds,
+    sort,
     whatsappClassification,
     metrics: activeMetricGroup,
+    mode: activeMode,
+    objective: insightObjective,
   };
   const structureFilters: MetaStructureFilters = {
     nameContains: structureNameContains,
@@ -1941,26 +2460,31 @@ export default async function ReportsPage({
   const shouldLoadMetaStructure =
     diagnosticRequested || structureFiltersApplied;
   const hasComparison = Boolean(
-    activeView === "campaigns" && compareSince && compareUntil,
+    showTable && activeView === "campaigns" && compareSince && compareUntil,
   );
   const [
     campaignReports,
     adSetReports,
     adReports,
+    insightReports,
     currentWorkspaceResult,
     comparisonReports,
     metaAssets,
     metaStructure,
+    adAccountCurrencies,
   ] = await Promise.all([
-    activeView === "campaigns"
+    showTable && activeView === "campaigns"
       ? getCampaignReports(requestedReportFilters)
       : Promise.resolve(null),
-    activeView === "adsets"
+    showTable && activeView === "adsets"
       ? getAdSetReports(requestedReportFilters)
       : Promise.resolve(null),
-    activeView === "ads"
+    showTable && activeView === "ads"
       ? getAdReports(requestedReportFilters)
       : Promise.resolve(null),
+    showTable
+      ? Promise.resolve(null)
+      : getReportInsights(activeView, requestedReportFilters, insightObjective),
     getCurrentWorkspaceResource(),
     hasComparison
       ? getCampaignReports({
@@ -1969,13 +2493,23 @@ export default async function ReportsPage({
           until: compareUntil,
           page: undefined,
           pageSize: undefined,
+          sort: undefined,
         })
       : Promise.resolve(null),
     getMetaAssets(),
     shouldLoadMetaStructure ? getMetaStructureReport() : Promise.resolve(null),
+    getAdAccountCurrencies(),
   ]);
+  const accountCurrencies = adAccountCurrencyMap(
+    (metaAssets?.reportingAccounts ?? []).filter((account) => account.active),
+    adAccountCurrencies,
+  );
   const loadedReport =
-    campaignReports?.report ?? adSetReports?.report ?? adReports?.report;
+    campaignReports?.report ??
+    adSetReports?.report ??
+    adReports?.report ??
+    insightReports?.report ??
+    undefined;
   const since = requestedSince ?? loadedReport?.since ?? undefined;
   const until = requestedUntil ?? loadedReport?.until ?? undefined;
   const reportFilters = {
@@ -2023,22 +2557,39 @@ export default async function ReportsPage({
     campaignReports?.state ??
     adSetReports?.state ??
     adReports?.state ??
-    "error";
+    (insightReports?.report ? "real" : "error");
   const rangeLabel =
     campaignReports?.report.rangeLabel ??
     adSetReports?.report.rangeLabel ??
     adReports?.report.rangeLabel ??
+    insightReports?.report?.rangeLabel ??
     "API indisponivel";
   const pagination: ReportPaginationDto | undefined =
     campaignReports?.report.pagination ??
     adSetReports?.report.pagination ??
-    adReports?.report.pagination;
+    adReports?.report.pagination ??
+    insightReports?.report?.pagination;
   const currentTotals: ReportTotals =
     campaignReports?.report.totals ??
     adSetReports?.report.totals ??
     adReports?.report.totals ??
+    insightReports?.report?.totals ??
     reportTotals(activeRows);
-  const summaryMetrics = reportSummaryMetrics(activeMetricGroup, currentTotals);
+  // Uma moeda no filtro (tudo igual a antes) ou um grupo por moeda, nunca
+  // somados. As linhas sempre trazem a moeda da própria conta de anúncio.
+  const activeCurrency = reportCurrency(loadedReport);
+  const activeCurrencyGroups = mixedCurrencyGroups(loadedReport);
+  const mixedCurrency = activeCurrencyGroups.length > 0;
+  const activeRateGap = mixedCurrency
+    ? noRateGap
+    : singleCurrencyRateGap(loadedReport);
+  const summaryMetrics = reportSummaryMetrics(
+    activeMetricGroup,
+    currentTotals,
+    activeCurrency,
+    mixedCurrency,
+    activeRateGap.exchangeRateMissing,
+  );
   const metaSummary = metaStructureSummary(metaStructure, metaAssets);
   const metaSyncPeriod = metaSyncPeriodState(metaAssets);
   const requestedPeriodLabel =
@@ -2105,16 +2656,64 @@ export default async function ReportsPage({
   const noReviewPermission = workspacePermissionsUnavailable
     ? "Permissoes indisponiveis"
     : "Sem permissao para revisar";
-  const reportTitle = {
-    ads: "Performance por anuncio",
-    adsets: "Performance por conjunto",
-    campaigns: "Performance por campanha",
-  }[activeView];
+  const reportTitle = (
+    showTable
+      ? {
+          ads: "Performance por anuncio",
+          adsets: "Performance por conjunto",
+          campaigns: "Performance por campanha",
+        }
+      : {
+          ads: "Insights por anuncio",
+          adsets: "Insights por conjunto",
+          campaigns: "Insights por campanha",
+        }
+  )[activeView];
+  const insightSorts = reportInsightSorts(insightObjective);
+  const insightObjectiveLinks = reportInsightObjectiveKeys.map((objective) => ({
+    href: reportViewHref(activeView, { ...reportFilters, objective }),
+    objective,
+  }));
+  const insightEntityHref = (row: ReportInsightRow) => {
+    if (activeView === "campaigns") {
+      return reportViewHref("adsets", {
+        ...reportFilters,
+        campaignId: row.id,
+        adSetId: undefined,
+        adId: undefined,
+        page: 1,
+        selectedIds: undefined,
+      });
+    }
+
+    if (activeView === "adsets") {
+      return reportViewHref("ads", {
+        ...reportFilters,
+        campaignId: row.campaignId,
+        adSetId: row.id,
+        adId: undefined,
+        page: 1,
+        selectedIds: undefined,
+      });
+    }
+
+    return undefined;
+  };
   const activeCopy = {
     ads: adSummaryCopy,
     adsets: adSetSummaryCopy,
     campaigns: campaignSummaryCopy,
   }[activeView];
+  const sortColumn = (step: ReportFunnelStepDto) =>
+    reportSortColumn(activeView, reportFilters, step);
+  const mobileSortActions = visibleReportFunnelSteps(
+    currentTotals.funnelSteps,
+    activeMetricGroup,
+  ).flatMap((step) => {
+    const column = sortColumn(step);
+
+    return column ? [column.count, column.cost] : [];
+  });
   const activeMetricLabel = {
     funnel: "Funil",
     overview: "Visao geral",
@@ -2151,6 +2750,26 @@ export default async function ReportsPage({
         <p>
           Metricas Meta Ads combinadas com leads reais e eventos de conversao.
         </p>
+        <nav
+          aria-label="Modo do relatorio"
+          className="report-view-tabs report-mode-tabs"
+        >
+          {(
+            [
+              ["table", "Tabela"],
+              ["insights", "Insights"],
+            ] as const
+          ).map(([mode, label]) => (
+            <Link
+              aria-current={activeMode === mode ? "page" : undefined}
+              className={activeMode === mode ? "active" : ""}
+              href={reportViewHref(activeView, { ...reportFilters, mode })}
+              key={mode}
+            >
+              {label}
+            </Link>
+          ))}
+        </nav>
       </header>
 
       <section
@@ -2163,7 +2782,7 @@ export default async function ReportsPage({
             <input type="hidden" name="metrics" value={activeMetricGroup} />
             <input type="hidden" name="pageSize" value={pageSize} />
             <input type="hidden" name="businessId" value={businessId ?? ""} />
-            <input type="hidden" name="adAccountId" value={adAccountId ?? ""} />
+            <AdAccountHiddenInput value={adAccountId} />
             <input type="hidden" name="campaignId" value={campaignId ?? ""} />
             <input type="hidden" name="adSetId" value={adSetId ?? ""} />
             <input type="hidden" name="adId" value={adId ?? ""} />
@@ -2190,6 +2809,11 @@ export default async function ReportsPage({
               type="hidden"
               name="compareUntil"
               value={compareUntil ?? ""}
+            />
+            <ReportSortHiddenInputs sort={sort} />
+            <ReportModeHiddenInputs
+              mode={activeMode}
+              objective={insightObjective}
             />
             <div className="report-period-context">
               <CalendarRange aria-hidden="true" size={17} />
@@ -2224,13 +2848,15 @@ export default async function ReportsPage({
               ) : null}
             </div>
             <div className="report-command-actions">
-              <Link
+              {/* Plain <a>: the target is a route handler (a CSV download),
+                  so a Next <Link> would prefetch it as a page and 404. */}
+              <a
                 className="button ghost"
                 href={reportExportHref(reportFilters, activeView)}
               >
                 <Download aria-hidden="true" size={16} />
                 Exportar CSV
-              </Link>
+              </a>
               {canSyncMetaReports ? (
                 <form action={syncMetaReports}>
                   <input type="hidden" name="view" value={activeView} />
@@ -2257,11 +2883,7 @@ export default async function ReportsPage({
                     name="businessId"
                     value={businessId ?? ""}
                   />
-                  <input
-                    type="hidden"
-                    name="adAccountId"
-                    value={adAccountId ?? ""}
-                  />
+                  <AdAccountHiddenInput value={adAccountId} />
                   <input
                     type="hidden"
                     name="campaignId"
@@ -2290,6 +2912,11 @@ export default async function ReportsPage({
                     type="hidden"
                     name="whatsappClassification"
                     value={whatsappClassification ?? ""}
+                  />
+                  <ReportSortHiddenInputs sort={sort} />
+                  <ReportModeHiddenInputs
+                    mode={activeMode}
+                    objective={insightObjective}
                   />
                   <SubmitButton
                     className="button ghost"
@@ -2352,6 +2979,7 @@ export default async function ReportsPage({
           </div>
 
           <MetaReportFilters
+            accountCurrencies={accountCurrencies}
             assets={metaAssets}
             businessId={businessId}
             adAccountId={adAccountId}
@@ -2371,6 +2999,10 @@ export default async function ReportsPage({
             compareUntil={compareUntil}
             view={activeView}
             pageSize={pageSize}
+            sort={sort}
+            insightObjective={
+              activeMode === "insights" ? insightObjective : undefined
+            }
           />
         </div>
       </section>
@@ -2421,55 +3053,89 @@ export default async function ReportsPage({
         </div>
       ) : null}
 
-      <section
-        className="report-results-overview"
-        aria-label="Resumo dos resultados filtrados"
-      >
-        <div className="report-results-heading">
-          <div className="report-results-title">
-            <BarChart3 aria-hidden="true" size={20} />
-            <div>
-              <span className="eyebrow">Resultados</span>
-              <h2>{activeMetricLabel}</h2>
-            </div>
-          </div>
-          <nav className="report-metric-tabs" aria-label="Grupo de metricas">
-            {(
-              [
-                ["overview", "Visao geral"],
-                ["traffic", "Trafego"],
-                ["funnel", "Funil"],
-                ["revenue", "Receita"],
-              ] as const
-            ).map(([metricGroup, label]) => (
-              <Link
-                aria-current={
-                  activeMetricGroup === metricGroup ? "page" : undefined
-                }
-                className={activeMetricGroup === metricGroup ? "active" : ""}
-                href={reportMetricGroupHref(
-                  metricGroup,
-                  activeView,
-                  reportFilters,
-                )}
-                key={metricGroup}
-              >
-                {label}
-              </Link>
-            ))}
-          </nav>
-        </div>
+      {insightReports ? (
+        <ReportInsightsPanel
+          cost={insightReports.cost}
+          costTableHref={reportInsightTableHref(
+            activeView,
+            reportFilters,
+            insightSorts.cost,
+          )}
+          entityHref={insightEntityHref}
+          level={activeView}
+          objective={insightObjective}
+          objectiveLinks={insightObjectiveLinks}
+          periodLabel={requestedPeriodLabel}
+          volume={insightReports.volume}
+          volumeTableHref={reportInsightTableHref(
+            activeView,
+            reportFilters,
+            insightSorts.volume,
+          )}
+        />
+      ) : null}
 
-        <div className="report-summary-strip">
-          {summaryMetrics.map((metric) => (
-            <article key={metric.label}>
-              <span>{metric.label}</span>
-              <strong>{metric.value}</strong>
-              <small>{metric.detail}</small>
-            </article>
-          ))}
-        </div>
-      </section>
+      {showTable ? (
+        <section
+          className="report-results-overview"
+          aria-label="Resumo dos resultados filtrados"
+        >
+          <div className="report-results-heading">
+            <div className="report-results-title">
+              <BarChart3 aria-hidden="true" size={20} />
+              <div>
+                <span className="eyebrow">Resultados</span>
+                <h2>{activeMetricLabel}</h2>
+              </div>
+            </div>
+            <nav className="report-metric-tabs" aria-label="Grupo de metricas">
+              {(
+                [
+                  ["overview", "Visao geral"],
+                  ["traffic", "Trafego"],
+                  ["funnel", "Funil"],
+                  ["revenue", "Receita"],
+                ] as const
+              ).map(([metricGroup, label]) => (
+                <Link
+                  aria-current={
+                    activeMetricGroup === metricGroup ? "page" : undefined
+                  }
+                  className={activeMetricGroup === metricGroup ? "active" : ""}
+                  href={reportMetricGroupHref(
+                    metricGroup,
+                    activeView,
+                    reportFilters,
+                  )}
+                  key={metricGroup}
+                >
+                  {label}
+                </Link>
+              ))}
+            </nav>
+          </div>
+
+          <div className="report-summary-strip">
+            {summaryMetrics.map((metric) => (
+              <article key={metric.label}>
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+                <small>{metric.detail}</small>
+              </article>
+            ))}
+          </div>
+
+          {mixedCurrency ? (
+            <CurrencyKpiGroups
+              groups={activeCurrencyGroups.map(currencyKpiGroup)}
+            />
+          ) : activeRateGap.exchangeRateMissing ? (
+            <ExchangeRateMissingNote
+              unconvertedRevenue={activeRateGap.unconvertedRevenue}
+            />
+          ) : null}
+        </section>
+      ) : null}
 
       {comparisonReports && comparisonTotals ? (
         <details className="surface-panel report-comparison-panel">
@@ -2484,15 +3150,24 @@ export default async function ReportsPage({
           </summary>
           <div className="metric-grid compact report-comparison-grid">
             <ReportComparisonMetrics
+              currency={activeCurrency}
               current={currentTotals}
               metricGroup={activeMetricGroup}
+              mixedCurrency={
+                mixedCurrency ||
+                mixedCurrencyGroups(comparisonReports.report).length > 0
+              }
               previous={comparisonTotals}
             />
           </div>
         </details>
       ) : null}
 
-      {activeView === "campaigns" ? (
+      {activeRows.length > 0 ? (
+        <ReportSortToolbar actions={mobileSortActions} />
+      ) : null}
+
+      {showTable && activeView === "campaigns" ? (
         <div className="table-wrap report-table-scroll">
           <table
             className="performance-table"
@@ -2516,6 +3191,7 @@ export default async function ReportsPage({
                 <PerformanceMetricHeaders
                   funnelSteps={currentTotals.funnelSteps}
                   metricGroup={activeMetricGroup}
+                  sortColumn={sortColumn}
                 />
                 <th className="performance-review-column">Revisao WhatsApp</th>
               </tr>
@@ -2557,6 +3233,7 @@ export default async function ReportsPage({
                         </strong>
                       </div>
                       <MetaEntityControls
+                        currency={rowCurrency(row, activeCurrency)}
                         action={updateMetaEntity}
                         budget={row.budget}
                         canManage={canSyncMetaReports}
@@ -2568,6 +3245,7 @@ export default async function ReportsPage({
                       />
                     </td>
                     <PerformanceMetricsCells
+                      currency={activeCurrency}
                       funnelSteps={currentTotals.funnelSteps}
                       metricGroup={activeMetricGroup}
                       row={row}
@@ -2614,6 +3292,7 @@ export default async function ReportsPage({
                     </span>
                   </td>
                   <EmptyPerformanceCells
+                    currency={activeCurrency}
                     funnelSteps={currentTotals.funnelSteps}
                     metricGroup={activeMetricGroup}
                   />
@@ -2627,6 +3306,9 @@ export default async function ReportsPage({
               )}
             </tbody>
             <PerformanceSummaryFooter
+              currency={activeCurrency}
+              currencyGroups={activeCurrencyGroups}
+              rateGap={activeRateGap}
               copy={campaignSummaryCopy}
               metricGroup={activeMetricGroup}
               pagination={pagination}
@@ -2637,7 +3319,7 @@ export default async function ReportsPage({
         </div>
       ) : null}
 
-      {activeView === "adsets" ? (
+      {showTable && activeView === "adsets" ? (
         <div className="table-wrap report-table-scroll">
           <table
             className="performance-table"
@@ -2661,6 +3343,7 @@ export default async function ReportsPage({
                 <PerformanceMetricHeaders
                   funnelSteps={currentTotals.funnelSteps}
                   metricGroup={activeMetricGroup}
+                  sortColumn={sortColumn}
                 />
                 <th className="performance-review-column">Revisao WhatsApp</th>
               </tr>
@@ -2705,6 +3388,7 @@ export default async function ReportsPage({
                         </PresentationMask>
                       </span>
                       <MetaEntityControls
+                        currency={rowCurrency(row, activeCurrency)}
                         action={updateMetaEntity}
                         budget={row.budget}
                         canManage={canSyncMetaReports}
@@ -2716,6 +3400,7 @@ export default async function ReportsPage({
                       />
                     </td>
                     <PerformanceMetricsCells
+                      currency={activeCurrency}
                       funnelSteps={currentTotals.funnelSteps}
                       metricGroup={activeMetricGroup}
                       row={row}
@@ -2763,6 +3448,7 @@ export default async function ReportsPage({
                     </span>
                   </td>
                   <EmptyPerformanceCells
+                    currency={activeCurrency}
                     funnelSteps={currentTotals.funnelSteps}
                     metricGroup={activeMetricGroup}
                   />
@@ -2776,6 +3462,9 @@ export default async function ReportsPage({
               )}
             </tbody>
             <PerformanceSummaryFooter
+              currency={activeCurrency}
+              currencyGroups={activeCurrencyGroups}
+              rateGap={activeRateGap}
               copy={adSetSummaryCopy}
               metricGroup={activeMetricGroup}
               pagination={pagination}
@@ -2786,7 +3475,7 @@ export default async function ReportsPage({
         </div>
       ) : null}
 
-      {activeView === "ads" ? (
+      {showTable && activeView === "ads" ? (
         <div className="table-wrap report-table-scroll">
           <table
             className="performance-table"
@@ -2810,6 +3499,7 @@ export default async function ReportsPage({
                 <PerformanceMetricHeaders
                   funnelSteps={currentTotals.funnelSteps}
                   metricGroup={activeMetricGroup}
+                  sortColumn={sortColumn}
                 />
                 <th className="performance-review-column">Revisao WhatsApp</th>
               </tr>
@@ -2861,6 +3551,7 @@ export default async function ReportsPage({
                         </div>
                       </div>
                       <MetaEntityControls
+                        currency={rowCurrency(row, activeCurrency)}
                         action={updateMetaEntity}
                         canManage={canSyncMetaReports}
                         configuredStatus={row.configuredStatus}
@@ -2871,6 +3562,7 @@ export default async function ReportsPage({
                       />
                     </td>
                     <PerformanceMetricsCells
+                      currency={activeCurrency}
                       funnelSteps={currentTotals.funnelSteps}
                       metricGroup={activeMetricGroup}
                       row={row}
@@ -2919,6 +3611,7 @@ export default async function ReportsPage({
                     </span>
                   </td>
                   <EmptyPerformanceCells
+                    currency={activeCurrency}
                     funnelSteps={currentTotals.funnelSteps}
                     metricGroup={activeMetricGroup}
                   />
@@ -2932,6 +3625,9 @@ export default async function ReportsPage({
               )}
             </tbody>
             <PerformanceSummaryFooter
+              currency={activeCurrency}
+              currencyGroups={activeCurrencyGroups}
+              rateGap={activeRateGap}
               copy={adSummaryCopy}
               metricGroup={activeMetricGroup}
               pagination={pagination}
@@ -2942,12 +3638,14 @@ export default async function ReportsPage({
         </div>
       ) : null}
 
-      <ReportPagination
-        copy={activeCopy}
-        filters={reportFilters}
-        pagination={pagination}
-        view={activeView}
-      />
+      {showTable ? (
+        <ReportPagination
+          copy={activeCopy}
+          filters={reportFilters}
+          pagination={pagination}
+          view={activeView}
+        />
+      ) : null}
 
       {shouldLoadMetaStructure ? (
         <details className="surface-panel meta-diagnostic-panel" open>
@@ -3038,7 +3736,7 @@ export default async function ReportsPage({
               value={compareUntil ?? ""}
             />
             <input type="hidden" name="businessId" value={businessId ?? ""} />
-            <input type="hidden" name="adAccountId" value={adAccountId ?? ""} />
+            <AdAccountHiddenInput value={adAccountId} />
             <input type="hidden" name="campaignId" value={campaignId ?? ""} />
             <input type="hidden" name="adSetId" value={adSetId ?? ""} />
             <input type="hidden" name="adId" value={adId ?? ""} />
@@ -3053,6 +3751,11 @@ export default async function ReportsPage({
               type="hidden"
               name="whatsappClassification"
               value={whatsappClassification ?? ""}
+            />
+            <ReportSortHiddenInputs sort={sort} />
+            <ReportModeHiddenInputs
+              mode={activeMode}
+              objective={insightObjective}
             />
             <select
               className="filter-control"

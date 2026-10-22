@@ -3,6 +3,7 @@ import type {
   InboundWebhookChannelDto,
   InboundWebhookConnectionDto,
   InboundWebhookConnectionOverviewDto,
+  InboundWebhookProviderDto,
   IntegrationHealthSummaryDto,
   IntegrationPipelineOverviewDto,
   MetaAssetsDto,
@@ -13,23 +14,54 @@ import type {
   CurrentWorkspaceDto,
   WhatsappConnectionDto,
 } from "@wpptrack/shared";
-import { metaAssetsSchema, whatsappConnectionsSchema } from "@wpptrack/shared";
-import {
-  Activity,
-  Database,
-  Megaphone,
-  MessageCircle,
-  Route,
-  Webhook,
-} from "lucide-react";
-import { revalidatePath } from "next/cache";
 import Link from "next/link";
+import { metaAssetsSchema, whatsappConnectionsSchema } from "@wpptrack/shared";
+import { Activity } from "lucide-react";
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import type { ReactNode } from "react";
+import { Fragment } from "react";
 import { SubmitButton } from "../../../components/submit-button";
 import { PresentationMask } from "../../../components/presentation-mask";
 import { displayTimeZone } from "../../../lib/date-time";
-import { serverApiFetch } from "../../../lib/server-api";
+import {
+  isLicenseLockedError,
+  serverApiFetch,
+} from "../../../lib/server-api";
 import { getCurrentWorkspace } from "../../../lib/current-workspace";
+import {
+  fetchLicenseStatus,
+  licenseLockReason,
+} from "../../../lib/license-status";
+import { KommoCrmManager } from "../settings/kommo-crm-manager";
+import { PipedriveCrmManager } from "../settings/pipedrive-crm-manager";
+import {
+  listKommoConnectionsAction,
+  type KommoConnectionDetailDto,
+} from "./kommo-actions";
+import {
+  listPipedriveConnectionsAction,
+  type PipedriveConnectionDetailDto,
+} from "./pipedrive-actions";
+import {
+  ensureIntegrationEndpointAction,
+  removeIntegrationEndpointAction,
+  retryIntegrationEventAction,
+  revealIntegrationEndpointAction,
+  rotateIntegrationEndpointAction,
+  setRulePublicUrlAction,
+} from "./single-url/single-url-actions";
+import { legacyUrlsFor } from "./single-url/single-url-copy";
+import { loadSingleUrlData } from "./single-url/single-url-data";
+import {
+  AutomationEventUrlsPanel,
+  PaytSingleUrlPanel,
+  type SingleUrlActions,
+} from "./single-url/single-url-panels";
+import { buildIntegrationCards } from "./hub/integration-cards";
+import { integrationsHubInitialState } from "./hub/initial-state";
+import { IntegrationsHub } from "./hub/integrations-hub";
+import type { IntegrationProviderId } from "./hub/integration-registry";
 import { MetaConversionDestinationForm } from "./meta-conversion-destination-form";
 import {
   createInboundWebhookChannelAction,
@@ -52,8 +84,12 @@ import {
   testWhatsappConnectionAction,
   updateWhatsappConnectionAction,
 } from "./whatsapp-provider-actions";
-import { WhatsappProviderPanel } from "./whatsapp-provider-panel";
 import {
+  WhatsappProviderPanel,
+  type WhatsappProviderId,
+} from "./whatsapp-provider-panel";
+import {
+  completeMetaPalmupConnectAction,
   createMetaManualConnectionAction,
   createMetaManualCredentialAction,
   createMetaOAuthAdvancedConnectionAction,
@@ -73,6 +109,7 @@ import {
   setMetaOAuthAdvancedAdDestinationAction,
   setMetaOAuthAdvancedConnectionStatusAction,
   setMetaOAuthAdvancedRoutingAction,
+  startMetaPalmupConnectAction,
   testMetaManualConnectionAction,
   testMetaOAuthAdvancedConnectionAction,
   syncMetaManualHistoryAction,
@@ -83,6 +120,8 @@ import {
   resolveMetaStatus,
 } from "./meta-connection-state";
 import { MetaReportingAccountsForm } from "./meta-reporting-accounts-form";
+import { WorkspaceCurrencyProvider } from "../../../components/workspace-currency";
+import { getWorkspaceCurrencySettings } from "../../../lib/currency-settings";
 
 type ResourceResult<T> = {
   data: T;
@@ -90,6 +129,8 @@ type ResourceResult<T> = {
 };
 
 type IntegrationsSearchParams = {
+  aba?: string;
+  abrir?: string;
   meta?: string;
   notice?: string;
 };
@@ -97,6 +138,8 @@ type IntegrationsSearchParams = {
 type IntegrationsPageProps = {
   searchParams?: Promise<IntegrationsSearchParams>;
 };
+
+type AccountUserSummary = { id: string };
 
 type PageNotice = {
   tone: "success" | "warn";
@@ -385,6 +428,88 @@ async function getWhatsappConnections(): Promise<
   }
 }
 
+async function getAccountUser(): Promise<AccountUserSummary | null> {
+  try {
+    const account = await serverApiFetch<{ user?: { id?: unknown } }>(
+      "/auth/me",
+    );
+
+    return typeof account.user?.id === "string"
+      ? { id: account.user.id }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+type KommoSettingsResult = {
+  connections: KommoConnectionDetailDto[];
+  // "forbidden"/"error" must never collapse into "empty": that would render
+  // the "no connections yet" create form on top of a load failure, inviting
+  // a duplicate connection against an account that may already have one.
+  state: "real" | "empty" | "error" | "forbidden";
+};
+
+async function getKommoSettings(
+  workspaceId: string | null,
+  enabled: boolean,
+): Promise<KommoSettingsResult> {
+  if (!workspaceId || !enabled) {
+    return { connections: [], state: "empty" };
+  }
+
+  try {
+    const result = await listKommoConnectionsAction(workspaceId);
+
+    if (result.ok) {
+      return {
+        connections: result.connections,
+        state: result.connections.length > 0 ? "real" : "empty",
+      };
+    }
+
+    return {
+      connections: [],
+      state: result.reason === "unauthorized" ? "forbidden" : "error",
+    };
+  } catch {
+    return { connections: [], state: "error" };
+  }
+}
+
+type PipedriveSettingsResult = {
+  connections: PipedriveConnectionDetailDto[];
+  // Same rule as Kommo: a failed load never collapses into "empty".
+  state: "real" | "empty" | "error" | "forbidden";
+};
+
+async function getPipedriveSettings(
+  workspaceId: string | null,
+  enabled: boolean,
+): Promise<PipedriveSettingsResult> {
+  if (!workspaceId || !enabled) {
+    return { connections: [], state: "empty" };
+  }
+
+  try {
+    const result = await listPipedriveConnectionsAction(workspaceId);
+
+    if (result.ok) {
+      return {
+        connections: result.connections,
+        state: result.connections.length > 0 ? "real" : "empty",
+      };
+    }
+
+    return {
+      connections: [],
+      state: result.reason === "unauthorized" ? "forbidden" : "error",
+    };
+  } catch {
+    return { connections: [], state: "error" };
+  }
+}
+
 async function refreshMetaAssets(formData: FormData) {
   "use server";
 
@@ -406,8 +531,10 @@ async function refreshMetaAssets(formData: FormData) {
 
     revalidatePath("/integrations");
     target = "/integrations?notice=meta-assets-refreshed";
-  } catch {
-    target = "/integrations?notice=meta-assets-refresh-error";
+  } catch (error) {
+    target = isLicenseLockedError(error)
+      ? "/integrations?notice=meta-license-locked"
+      : "/integrations?notice=meta-assets-refresh-error";
   }
 
   redirect(target);
@@ -440,8 +567,10 @@ async function saveMetaConversionDestination(formData: FormData) {
     });
     revalidatePath("/integrations");
     target = "/integrations?notice=meta-destination-saved";
-  } catch {
-    target = "/integrations?notice=meta-destination-error";
+  } catch (error) {
+    target = isLicenseLockedError(error)
+      ? "/integrations?notice=meta-license-locked"
+      : "/integrations?notice=meta-destination-error";
   }
 
   redirect(target);
@@ -505,8 +634,10 @@ async function saveMetaReportingAccount(formData: FormData) {
     });
     revalidatePath("/integrations");
     target = "/integrations?notice=meta-reporting-saved";
-  } catch {
-    target = "/integrations?notice=meta-reporting-error";
+  } catch (error) {
+    target = isLicenseLockedError(error)
+      ? "/integrations?notice=meta-license-locked"
+      : "/integrations?notice=meta-reporting-error";
   }
 
   redirect(target);
@@ -561,8 +692,10 @@ async function setMetaReportingAccountStatus(formData: FormData) {
     );
     revalidatePath("/integrations");
     target = "/integrations?notice=meta-reporting-status-saved";
-  } catch {
-    target = "/integrations?notice=meta-reporting-status-error";
+  } catch (error) {
+    target = isLicenseLockedError(error)
+      ? "/integrations?notice=meta-license-locked"
+      : "/integrations?notice=meta-reporting-status-error";
   }
 
   redirect(target);
@@ -602,7 +735,7 @@ function statusLabel(status: string) {
     disconnected: "Configurar",
     not_connected: "Nao conectado",
     error: "Erro",
-    pending_payment: "Pagamento pendente",
+    pending_payment: "Aguardando ativação",
     active: "Ativa",
     needs_reconnect: "Reconectar",
     not_configured: "Nao configurado",
@@ -718,30 +851,11 @@ function integrationsNotice(
       title: "Status nao atualizado",
       message: "Nao foi possivel alterar o status da conta agora.",
     },
-    "whatsapp-connect-requested": {
-      tone: "success",
-      title: "Conexao solicitada",
-      message: "A solicitacao de conexao do WhatsApp foi enviada ao provedor.",
-    },
-    "whatsapp-connect-error": {
+    "meta-license-locked": {
       tone: "warn",
-      title: "Conexao nao iniciada",
-      message: "Nao foi possivel solicitar a conexao do WhatsApp agora.",
-    },
-    "whatsapp-checkout-missing": {
-      tone: "warn",
-      title: "Instancia sem nome",
-      message: "Informe um nome para gerar a cobranca da instancia.",
-    },
-    "whatsapp-checkout-created": {
-      tone: "success",
-      title: "Cobranca criada",
-      message: "A instancia foi criada como pendente de pagamento.",
-    },
-    "whatsapp-checkout-error": {
-      tone: "warn",
-      title: "Cobranca nao criada",
-      message: "Nao foi possivel gerar a cobranca da instancia agora.",
+      title: "Licença bloqueada",
+      message:
+        "Alterações estão indisponíveis enquanto a licença estiver bloqueada. Verifique /backoffice/license.",
     },
   };
 
@@ -850,6 +964,8 @@ export default async function IntegrationsPage({
     pipelineResult,
     workspaceResult,
     metaCapabilitiesResult,
+    accountUser,
+    licenseStatus,
   ] = await Promise.all([
     getHealth(),
     getMetaConnection(),
@@ -857,6 +973,8 @@ export default async function IntegrationsPage({
     getIntegrationPipeline(),
     getCurrentWorkspaceResource(),
     getMetaCapabilities(),
+    getAccountUser(),
+    fetchLicenseStatus(),
   ]);
   const usesExternalWhatsapp =
     pipelineResult.data?.whatsappSource?.mode === "external";
@@ -870,17 +988,54 @@ export default async function IntegrationsPage({
   const manualEnabled =
     metaCapabilitiesResult.state === "real" && metaCapabilities.manualEnabled;
   const oauthConnected = legacyMetaConnected && oauthEnabled;
-  const metaManualResult = oauthConnected
-    ? await getMetaOAuthAdvancedConfiguration()
-    : manualEnabled
-      ? await getMetaManualConfiguration()
-      : ({ data: null, state: "empty" } as const);
-  const inboundWebhookResult = await getInboundWebhookData();
-  const whatsappConnectionsResult = await getWhatsappConnections();
-  const legacyWhatsappInstancesResult = await getLegacyWhatsappInstances();
+  const workspace = workspaceResult.data;
+  const isPlatformSupport = workspace?.accessMode === "platform_support";
+  const isPlatformOwnerSupport = Boolean(
+    isPlatformSupport && workspace?.platformRole === "platform_owner",
+  );
+  // The Kommo routes are owner-only on the API (members get 403), so the UI
+  // only loads them for owners with integration permission.
+  const canManageKommo = Boolean(
+    workspace &&
+      workspace.role === "owner" &&
+      workspace.permissions?.canManageIntegrations &&
+      (!isPlatformSupport || isPlatformOwnerSupport),
+  );
+  const kommoViewerId = accountUser?.id ?? null;
+  const [
+    metaManualResult,
+    inboundWebhookResult,
+    whatsappConnectionsResult,
+    legacyWhatsappInstancesResult,
+    kommoSettings,
+    pipedriveSettings,
+    singleUrlData,
+  ] = await Promise.all([
+    oauthConnected
+      ? getMetaOAuthAdvancedConfiguration()
+      : manualEnabled
+        ? getMetaManualConfiguration()
+        : Promise.resolve({ data: null, state: "empty" } as const),
+    getInboundWebhookData(),
+    getWhatsappConnections(),
+    getLegacyWhatsappInstances(),
+    getKommoSettings(
+      workspace?.id ?? null,
+      canManageKommo && Boolean(kommoViewerId),
+    ),
+    // Pipedrive routes share the owner-only guard of Kommo.
+    getPipedriveSettings(
+      workspace?.id ?? null,
+      canManageKommo && Boolean(kommoViewerId),
+    ),
+    // Fase 5.3: cada leitura falha sozinha (uma API antiga não derruba a tela).
+    loadSingleUrlData(),
+  ]);
+  const licenseLocked = Boolean(
+    licenseStatus && licenseLockReason(licenseStatus) !== null,
+  );
   const inboundWebhookData = inboundWebhookResult.data;
   const pipeline = pipelineResult.data;
-  const workspace = workspaceResult.data;
   const isPlatformOperator = Boolean(workspace?.platformRole);
   const workspacePermissionsUnavailable = workspaceResult.state === "error";
   const canManageIntegrations = Boolean(
@@ -902,6 +1057,7 @@ export default async function IntegrationsPage({
       ? [inboundWebhookResult.state]
       : []),
   ].includes("error");
+
   const metaStatus = resolveMetaStatus(
     metaConnection?.status,
     metaAssets?.status,
@@ -954,243 +1110,412 @@ export default async function IntegrationsPage({
           : metaStatus
             ? statusLabel(metaStatus)
             : "Meta nao conectado";
-  const metaDestinationCount = manualConfigured
-    ? (metaManualResult.data?.destinations.filter(
-        (destination) => destination.status === "configured",
-      ).length ?? 0)
-    : metaAssets?.conversionDestination
-      ? 1
-      : 0;
   const inboundConnectionCount =
     inboundWebhookData?.connections.filter(
       ({ overview }) => overview.connection.status !== "paused",
     ).length ?? 0;
   const legacyWhatsappInstances = legacyWhatsappInstancesResult.data;
-  const whatsappSourceLabel = usesExternalWhatsapp
-    ? "MySQL externo"
-    : inboundConnectionCount > 0
-      ? `${inboundConnectionCount} webhook${inboundConnectionCount === 1 ? "" : "s"}`
-      : "Aguardando fonte";
-  const whatsappSourceDetail = usesExternalWhatsapp
-    ? "Leitura incremental configurada"
-    : inboundConnectionCount > 0
-      ? "Plataformas WhatsApp em observacao"
-      : "Nenhuma origem ativa";
-  const finalPipelineStage = pipeline?.stages.at(-1);
+  const inboundConnections = inboundWebhookData?.connections ?? [];
+  const allInboundChannels = inboundConnections.flatMap(
+    ({ channels }) => channels,
+  );
+  const inboundConnectionsFor = (provider: string) =>
+    inboundConnections.filter(
+      ({ overview }) => overview.connection.provider === provider,
+    );
+  const apiUnavailableForMeta =
+    metaAssetsResult.state === "error" &&
+    metaConnectionResult.state === "error";
+  const metaConnected = !apiUnavailableForMeta && (manualConfigured || metaStatus === "connected");
+  const metaNeedsAttention =
+    apiUnavailableForMeta ||
+    metaStatus === "needs_reconnect" ||
+    metaStatus === "error";
+  const metaCardLabel = apiUnavailableForMeta
+    ? "Não foi possível verificar"
+    : metaStatus === "needs_reconnect"
+      ? "Reconectar"
+      : metaStatus === "error"
+        ? "Com erro"
+        : metaConnected
+          ? "Conectada"
+          : "Disponível";
+  // Kommo is owner-only on the API: for everyone else the card says so
+  // instead of looking like an empty, connectable CRM.
+  const kommoCardLoadState =
+    workspace && !canManageKommo
+      ? ("forbidden" as const)
+      : kommoSettings.state;
+  const pipedriveCardLoadState =
+    workspace && !canManageKommo
+      ? ("forbidden" as const)
+      : pipedriveSettings.state;
 
-  return (
-    <section className="page-stack page-standard integrations-page">
-      <header className="page-header">
-        <div>
-          <span className="eyebrow">Integracoes</span>
-          <h1>Central de integracoes</h1>
-          <p>
-            {usesExternalWhatsapp
-              ? "Acompanhe a origem das conversas, as contas Meta e o caminho dos eventos deste workspace."
-              : "Configure Meta, fontes WhatsApp e o destino das conversoes em um unico fluxo operacional."}
+  // Payt has no connection: its rules live in Conversões.
+  const paytRules = (inboundWebhookData?.providerRules ?? []).filter(
+    (rule) => rule.automationSource === "payt",
+  );
+
+  // Fase 5.3: URL única (Payt) e URLs por evento (Unnichat e Umbler).
+  const singleUrlEnabled = Boolean(singleUrlData.endpoints?.enabled);
+  const singleUrlEndpoints = singleUrlData.endpoints?.endpoints ?? [];
+  const singleUrlLegacy = singleUrlData.endpoints?.legacyUrls ?? [];
+  // A API é a fonte da permissão (membros só leem); a sessão confirma.
+  const canManageSingleUrl =
+    canManageIntegrations && (singleUrlData.endpoints?.canManage ?? true);
+  const singleUrlActions: SingleUrlActions = {
+    ensure: ensureIntegrationEndpointAction,
+    reveal: revealIntegrationEndpointAction,
+    rotate: rotateIntegrationEndpointAction,
+    remove: removeIntegrationEndpointAction,
+    retry: retryIntegrationEventAction,
+    setPublicUrl: setRulePublicUrlAction,
+  };
+  const paytIntegrationUrl =
+    singleUrlEndpoints.find((endpoint) => endpoint.provider === "payt") ??
+    null;
+  const ruleEventsFor = (origin: string) => [
+    ...new Set(
+      (inboundWebhookData?.providerRules ?? [])
+        .filter(
+          (rule) =>
+            (rule.origin === origin ||
+              (origin === "automation_payt" &&
+                rule.automationSource === "payt")) &&
+            rule.conversionRule.active,
+        )
+        .map((rule) => rule.conversionRule.eventName),
+    ),
+  ];
+  const singleUrlNumberNames = Object.fromEntries(
+    inboundConnections
+      .flatMap(({ channels }) => channels)
+      .map((channel) => [
+        channel.id,
+        channel.channelName ?? channel.connectedPhone ?? "Número",
+      ]),
+  );
+
+  const cards = buildIntegrationCards({
+    inbound: inboundWebhookData
+      ? {
+          enabled: inboundWebhookData.capabilities.enabled,
+          providers: inboundWebhookData.capabilities.providers,
+          connections: inboundConnections.map(({ overview }) => ({
+            provider: overview.connection.provider,
+            status: overview.connection.status,
+          })),
+        }
+      : null,
+    whatsapp: {
+      loaded: whatsappConnectionsResult.state !== "error",
+      connections: whatsappConnectionsResult.data.map((connection) => ({
+        provider: connection.provider,
+        status: connection.status,
+      })),
+      legacyUazapiInstances: usesExternalWhatsapp
+        ? 0
+        : legacyWhatsappInstances.length + inboundConnectionsFor("uazapi").length,
+    },
+    payt: {
+      loaded:
+        Boolean(inboundWebhookData) && inboundWebhookData!.providerRulesEnabled,
+      ruleCount: paytRules.length,
+      activeRuleCount: paytRules.filter((rule) => rule.conversionRule.active)
+        .length,
+      integrationUrl: Boolean(paytIntegrationUrl),
+    },
+    crm: {
+      kommo: {
+        loadState: kommoCardLoadState,
+        statuses: kommoSettings.connections.map((connection) => connection.status),
+      },
+      pipedrive: {
+        loadState: pipedriveCardLoadState,
+        statuses: pipedriveSettings.connections.map(
+          (connection) => connection.status,
+        ),
+      },
+    },
+    meta: {
+      connected: metaConnected,
+      needsAttention: metaNeedsAttention,
+      statusLabel: metaCardLabel,
+    },
+  });
+  const initialHubState = integrationsHubInitialState(resolvedSearchParams);
+
+  const rulesLink = {
+    label: "Regras de conversão",
+    href: "/conversions",
+  };
+
+  function whatsappProviderPanel(
+    provider: WhatsappProviderId,
+    allowCreate = true,
+  ) {
+    return (
+      <WhatsappProviderPanel
+        provider={provider}
+        allowCreate={allowCreate}
+        connections={whatsappConnectionsResult.data}
+        canManage={canManageIntegrations}
+        createAction={createWhatsappConnectionAction}
+        testAction={testWhatsappConnectionAction}
+        rotateAction={rotateWhatsappWebhookTokenAction}
+        editAction={updateWhatsappConnectionAction}
+        loadEditAction={loadWhatsappConnectionForEditAction}
+        deleteAction={deleteWhatsappConnectionAction}
+        licenseLocked={licenseLocked}
+      />
+    );
+  }
+
+  function inboundPanel(
+    provider: InboundWebhookProviderDto,
+    options: { allowCreate?: boolean; scopeDescription?: string } = {},
+  ) {
+    if (!inboundWebhookData) {
+      return (
+        <p className="feedback-banner warn" role="status">
+          Não foi possível carregar as conexões agora. Atualize a página em
+          instantes.
+        </p>
+      );
+    }
+
+    return (
+      <InboundWebhookPanel
+        provider={provider}
+        allowCreate={options.allowCreate}
+        scopeDescription={options.scopeDescription}
+        canRecover={Boolean(
+          workspace?.role === "owner" && workspace?.accessMode === "member",
+        )}
+        capabilities={inboundWebhookData.capabilities}
+        connections={inboundWebhookData.connections}
+        providerRules={inboundWebhookData.providerRules}
+        providerRulesEnabled={inboundWebhookData.providerRulesEnabled}
+        metaConfiguration={metaManualResult.data}
+        canManage={canManageIntegrations}
+        createAction={createInboundWebhookConnectionAction}
+        rotateSecretAction={rotateInboundWebhookSecretAction}
+        setConnectionStatusAction={setInboundWebhookConnectionStatusAction}
+        removeConnectionAction={removeInboundWebhookConnectionAction}
+        createChannelAction={createInboundWebhookChannelAction}
+        setChannelStatusAction={setInboundWebhookChannelStatusAction}
+        saveRoutesAction={saveInboundWebhookChannelRoutesAction}
+        licenseLocked={licenseLocked}
+      />
+    );
+  }
+
+  const hasWhatsappNumber = inboundConnections.length > 0;
+  const automationUrlsPanel = (provider: "unnichat" | "umbler") =>
+    singleUrlEnabled ? (
+      <div className="integration-modal-stack">
+        <AutomationEventUrlsPanel
+          provider={provider}
+          endpoints={singleUrlEndpoints.filter(
+            (endpoint) => endpoint.provider === provider,
+          )}
+          unattributed={singleUrlData.unattributed[provider]}
+          legacyUrls={legacyUrlsFor(singleUrlLegacy, provider)}
+          ruleEvents={ruleEventsFor(`automation_${provider}`)}
+          canManage={canManageSingleUrl}
+          licenseLocked={licenseLocked}
+          actions={singleUrlActions}
+          numberNames={singleUrlNumberNames}
+        />
+        {inboundPanel(provider)}
+      </div>
+    ) : (
+      inboundPanel(provider)
+    );
+  const paytRulesBlock = (
+    <div className="integration-modal-note">
+      <strong>Regras de venda</strong>
+      <p className="muted">
+        Crie uma regra por evento (compra aprovada, Pix/boleto gerado,
+        carrinho abandonado), para todos os números ou só para alguns, e, se
+        quiser, só para certos produtos. A venda segue para a regra do número
+        por onde o comprador chegou.
+      </p>
+      {hasWhatsappNumber ? (
+        <Link
+          className="button primary"
+          href={
+            paytRules.length > 0
+              ? "/conversions"
+              : "/conversions?nova=automation_payt"
+          }
+        >
+          {paytRules.length > 0
+            ? "Gerenciar regras da Payt"
+            : "Criar regra de venda da Payt"}
+        </Link>
+      ) : (
+        <>
+          <p className="muted">
+            Antes, conecte um número de WhatsApp para saber de qual anúncio veio
+            cada comprador.
           </p>
-        </div>
-        {isPlatformOperator ? (
-          <div className="header-actions">
-            <span
-              className={`status-chip${hasIntegrationError ? " warn" : ""}`}
-            >
-              {hasIntegrationError ? "API indisponivel" : "API conectada"}
-            </span>
-            <span className="status-chip">
-              {integrations.length} provedores
-            </span>
-          </div>
-        ) : null}
-      </header>
-
-      {pageNotice ? (
-        <div className={`feedback-banner ${pageNotice.tone}`} role="status">
-          <strong>{pageNotice.title}</strong>
-          <span>{pageNotice.message}</span>
-        </div>
-      ) : null}
-
-      {workspacePermissionsUnavailable ? (
-        <div className="feedback-banner warn" role="alert">
-          <strong>Permissoes temporariamente indisponiveis</strong>
-          <span>
-            Nao foi possivel confirmar as permissoes agora. A API validara a
-            acao ao continuar.
-          </span>
-          <a className="button" href="/integrations">
-            Tentar novamente
+          <a className="button" href="#integracao-whatsapp">
+            Ir para WhatsApp
           </a>
-        </div>
-      ) : null}
-
-      <section
-        className="integration-overview"
-        aria-labelledby="integration-overview-title"
-      >
-        <div className="integration-overview-heading">
-          <div>
-            <span className="eyebrow">Estado do workspace</span>
-            <h2 id="integration-overview-title">Mapa das conexoes</h2>
-          </div>
-          <span className={`status-chip${hasIntegrationError ? " warn" : ""}`}>
-            {hasIntegrationError ? "Requer atencao" : "Operacao disponivel"}
-          </span>
-        </div>
-        <div className="integration-overview-rail">
-          <article>
-            <span className="integration-overview-icon meta" aria-hidden="true">
-              <Megaphone size={18} />
-            </span>
-            <div>
-              <span className="micro-label">Meta Ads</span>
-              <strong>{metaStatusLabel}</strong>
-              <small>
-                {manualConfigured
-                  ? `${manualActiveReportingAccounts} contas em relatorios`
-                  : `${activeReportingAccounts} contas em relatorios`}
-              </small>
-            </div>
-          </article>
-          <article>
-            <span
-              className="integration-overview-icon whatsapp"
-              aria-hidden="true"
-            >
-              <MessageCircle size={18} />
-            </span>
-            <div>
-              <span className="micro-label">Fonte WhatsApp</span>
-              <strong>{whatsappSourceLabel}</strong>
-              <small>{whatsappSourceDetail}</small>
-            </div>
-          </article>
-          <article>
-            <span className="integration-overview-icon capi" aria-hidden="true">
-              <Database size={18} />
-            </span>
-            <div>
-              <span className="micro-label">Destino CAPI</span>
-              <strong>
-                {metaDestinationCount > 0
-                  ? `${metaDestinationCount} configurado${metaDestinationCount === 1 ? "" : "s"}`
-                  : "Nao configurado"}
-              </strong>
-              <small>Pixel e Pagina por rota Meta</small>
-            </div>
-          </article>
-          <article>
-            <span
-              className="integration-overview-icon signal"
-              aria-hidden="true"
-            >
-              <Activity size={18} />
-            </span>
-            <div>
-              <span className="micro-label">Ultima etapa</span>
-              <strong>
-                {finalPipelineStage
-                  ? `${finalPipelineStage.value} ${finalPipelineStage.label}`
-                  : "Aguardando sinal"}
-              </strong>
-              <small>
-                {pipeline?.rangeLabel ?? "Pipeline ainda sem eventos"}
-              </small>
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <nav
-        className="integration-domain-nav"
-        aria-label="Atalhos das integracoes"
-      >
-        <a href="#integracao-meta">
-          <Megaphone size={16} aria-hidden="true" />
-          Meta Ads
-        </a>
-        <a href="#integracao-whatsapp">
-          <Webhook size={16} aria-hidden="true" />
-          Fontes WhatsApp
-        </a>
-        <a href="#integracao-fluxo">
-          <Route size={16} aria-hidden="true" />
-          Fluxo de dados
-        </a>
-      </nav>
-
-      {isPlatformOperator ? (
-        <details className="integration-technical-health">
-          <summary>
-            <span>
-              <Activity size={17} aria-hidden="true" />
-              Saude tecnica dos provedores
-            </span>
-            <small>{integrations.length} provedores monitorados</small>
-          </summary>
-          <div className="integration-grid">
-            {integrations.length > 0 ? (
-              integrations.map((item) => (
-                <article className="integration-card" key={item.title}>
-                  <span
-                    className={`status-chip${item.tone ? ` ${item.tone}` : ""}`}
-                  >
-                    {item.status}
-                  </span>
-                  <div>
-                    <span className="micro-label">{item.title}</span>
-                    <strong>{item.detail}</strong>
-                  </div>
-                  <p className="muted">{item.description}</p>
-                  <button className="button" type="button">
-                    Ver diagnostico
-                  </button>
-                </article>
-              ))
-            ) : (
-              <article className="integration-card">
-                <span className="status-chip warn">
-                  {healthResult.state === "error"
-                    ? "API indisponivel"
-                    : "Sem provedores"}
-                </span>
-                <div>
-                  <span className="micro-label">Integracoes</span>
-                  <strong>
-                    {healthResult.state === "error"
-                      ? "Nao foi possivel carregar integracoes"
-                      : "Nenhuma integracao retornada"}
-                  </strong>
-                </div>
-                <p className="muted">
-                  A lista sera preenchida somente com provedores retornados pelo
-                  backend.
-                </p>
-              </article>
-            )}
-          </div>
-        </details>
-      ) : null}
-
-      <section
-        className="integration-domain-section integration-meta-domain"
-        id="integracao-meta"
-        aria-labelledby="integration-meta-title"
-      >
-        <header className="integration-domain-heading">
-          <span className="integration-domain-number">01</span>
-          <div>
-            <span className="eyebrow">Aquisicao e conversao</span>
-            <h2 id="integration-meta-title">Meta Ads</h2>
-            <p>
-              Autorize a estrutura anunciante, escolha as contas dos relatorios
-              e vincule cada rota ao Pixel e a Pagina corretos.
+        </>
+      )}
+    </div>
+  );
+  const paytPanel = singleUrlEnabled ? (
+    <div className="integration-modal-stack">
+      <PaytSingleUrlPanel
+        endpoint={paytIntegrationUrl}
+        products={singleUrlData.paytProducts}
+        unattributed={singleUrlData.unattributed.payt}
+        legacyUrls={legacyUrlsFor(singleUrlLegacy, "payt")}
+        ruleEvents={ruleEventsFor("automation_payt")}
+        canManage={canManageSingleUrl}
+        licenseLocked={licenseLocked}
+        actions={singleUrlActions}
+        numberNames={singleUrlNumberNames}
+      />
+      {paytRulesBlock}
+    </div>
+  ) : (
+    <div className="integration-modal-stack">
+      <div className="integration-modal-note">
+        <strong>
+          {paytRules.length > 0
+            ? `${paytRules.length} ${paytRules.length === 1 ? "regra de venda configurada" : "regras de venda configuradas"}`
+            : "Como funciona"}
+        </strong>
+        <p className="muted">
+          A Payt não tem conexão própria. Ela funciona por regra em Conversões:
+          cada regra gera uma URL de postback, que você cola na Payt. Quando o
+          comprador é um lead que chegou pelo WhatsApp, a venda vai para a Meta
+          como conversão do anúncio de origem.
+        </p>
+        <ol className="integration-steps">
+          <li>
+            Em Conversões, crie uma regra de venda da Payt (compra aprovada,
+            Pix/boleto gerado ou carrinho abandonado).
+          </li>
+          <li>
+            Copie a URL gerada e cole na Payt, em Postback. Ela aparece uma
+            única vez.
+          </li>
+          <li>
+            A regra começa em observação; ative o envio quando conferir as
+            primeiras vendas.
+          </li>
+        </ol>
+        {hasWhatsappNumber ? (
+          <Link
+            className="button primary"
+            href={
+              paytRules.length > 0
+                ? "/conversions"
+                : "/conversions?nova=automation_payt"
+            }
+          >
+            {paytRules.length > 0
+              ? "Gerenciar regras da Payt"
+              : "Criar regra de venda da Payt"}
+          </Link>
+        ) : (
+          <>
+            <p className="muted">
+              Antes, conecte um número de WhatsApp para saber de qual anúncio
+              veio cada comprador.
             </p>
-          </div>
-          <span className="status-chip">{metaStatusLabel}</span>
-        </header>
+            <a className="button" href="#integracao-whatsapp">
+              Ir para WhatsApp
+            </a>
+          </>
+        )}
+      </div>
+    </div>
+  );
 
-        <div className="integration-domain-content">
+  const uazapiPanel = (
+    <div className="integration-modal-stack">
+      {whatsappProviderPanel("uazapi_byo")}
+      {!usesExternalWhatsapp ? (
+        <div className="surface-panel whatsapp-instance-panel">
+          <span className="eyebrow">Instância por variável de ambiente</span>
+          <h2>Instancia Uazapi (BYO)</h2>
+          <p className="muted">
+            Esta edicao tambem le uma instancia Uazapi configurada por variavel
+            de ambiente (UAZAPI_BASE_URL/UAZAPI_TOKEN). Nao ha marketplace de
+            instancias nem cobranca dentro do painel.
+          </p>
+          <div className="metric-grid compact">
+            <div className="metric-card">
+              <span className="micro-label">Status Uazapi</span>
+              <strong>
+                {statusLabel(
+                  health?.providers.find(
+                    (item) => item.provider === "uazapi_byo",
+                  )?.status ?? "not_configured",
+                )}
+              </strong>
+            </div>
+            <div className="metric-card">
+              <span className="micro-label">Webhooks recebidos</span>
+              <strong>
+                {inboundConnectionCount > 0
+                  ? `${inboundConnectionCount} webhook${inboundConnectionCount === 1 ? "" : "s"}`
+                  : "Nenhum webhook ativo"}
+              </strong>
+            </div>
+          </div>
+          {legacyWhatsappInstancesResult.state === "error" ? (
+            <p className="muted">Nao foi possivel carregar instancias.</p>
+          ) : legacyWhatsappInstances.length > 0 ? (
+            <div className="inbound-connection-list">
+              {legacyWhatsappInstances.map((instance) => (
+                <div className="inbound-connection-body" key={instance.id}>
+                  <strong>{instance.name}</strong>
+                  <span>{instance.providerInstanceId ?? instance.id}</span>
+                  <span>{statusLabel(instance.billingStatus)}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {inboundConnectionsFor("uazapi").length > 0
+        ? inboundPanel("uazapi", {
+            allowCreate: false,
+            scopeDescription:
+              "Conexoes recebidas da Uazapi: confira os numeros e escolha quais canais enviam conversoes.",
+          })
+        : null}
+    </div>
+  );
+
+  const crmUnavailableNote = (crmName: string) => (
+    <div className="integration-modal-note">
+      <strong>Não foi possível carregar o {crmName}</strong>
+      <p className="muted">
+        Não foi possível confirmar a sua conta agora. Atualize a página em
+        instantes.
+      </p>
+    </div>
+  );
+  const crmOwnerOnlyNote = (
+    <div className="integration-modal-note">
+      <strong>Somente o dono da conta conecta CRMs</strong>
+      <p className="muted">
+        Peça ao dono da conta para conectar ou alterar o CRM. Depois de
+        conectado, as conversões passam a valer para todos os números.
+      </p>
+    </div>
+  );
+
+  const metaPanel = (
+    <div className="integration-modal-stack integration-meta-domain">
           {oauthEnabled ? (
             <div className="connection-callout integration-meta-oauth">
               <div>
@@ -1329,6 +1654,11 @@ export default async function IntegrationsPage({
                 : setMetaManualAdDestinationAction
             }
             setOAuthRoutingAction={setMetaOAuthAdvancedRoutingAction}
+            canConnectPalmup={
+              canManageIntegrations && workspace?.role === "owner"
+            }
+            startPalmupConnectAction={startMetaPalmupConnectAction}
+            completePalmupConnectAction={completeMetaPalmupConnectAction}
           />
           <div className="metric-grid compact integration-meta-metrics">
             <div className="metric-card">
@@ -1461,134 +1791,252 @@ export default async function IntegrationsPage({
               ? "A conexao Meta fica protegida no backend. Cada conta ativa usa o Pixel e a Pagina vinculados a sua BM."
               : "A conexao Meta fica protegida no backend. Esta tela mostra apenas o destino principal e as contas ativas usadas nos relatorios."}
           </p>
-        </div>
-      </section>
+    </div>
+  );
 
-      <section
-        className="integration-domain-section integration-whatsapp-domain"
-        id="integracao-whatsapp"
-        aria-labelledby="integration-whatsapp-title"
-      >
-        <header className="integration-domain-heading">
-          <span className="integration-domain-number">02</span>
-          <div>
-            <span className="eyebrow">Origem das conversas</span>
-            <h2 id="integration-whatsapp-title">Fontes WhatsApp</h2>
-            <p>
-              Conecte a plataforma que recebe as mensagens e confira a origem
-              antes de liberar qualquer evento para o funil.
-            </p>
-          </div>
-          <span className="status-chip">{whatsappSourceLabel}</span>
-        </header>
+  // WAHA, Z-API and NOD API are "Em breve": no new connections, but a workspace
+  // that already has one keeps managing it (existing data is never hidden).
+  const comingSoonPanels: Partial<Record<IntegrationProviderId, ReactNode>> =
+    {};
+  for (const provider of ["waha", "zapi", "nod_api"] as const) {
+    if (
+      whatsappConnectionsResult.data.some(
+        (connection) => connection.provider === provider,
+      )
+    ) {
+      comingSoonPanels[provider] = whatsappProviderPanel(provider, false);
+    }
+  }
 
-        <div className="integration-domain-content integration-whatsapp-content">
-          <WhatsappProviderPanel
-            connections={whatsappConnectionsResult.data}
-            canManage={canManageIntegrations}
-            createAction={createWhatsappConnectionAction}
-            testAction={testWhatsappConnectionAction}
-            rotateAction={rotateWhatsappWebhookTokenAction}
-            editAction={updateWhatsappConnectionAction}
-            loadEditAction={loadWhatsappConnectionForEditAction}
-            deleteAction={deleteWhatsappConnectionAction}
+  const panels: Partial<Record<IntegrationProviderId, ReactNode>> = {
+    uazapi_byo: uazapiPanel,
+    ...comingSoonPanels,
+    meta_cloud: inboundPanel("meta_cloud"),
+    umbler: automationUrlsPanel("umbler"),
+    gupshup: inboundPanel("gupshup"),
+    data_crazy: inboundPanel("data_crazy"),
+    unnichat: automationUrlsPanel("unnichat"),
+    payt: paytPanel,
+    meta: metaPanel,
+    kommo:
+      workspace && kommoViewerId && canManageKommo ? (
+        <div className="integration-modal-stack">
+          <KommoCrmManager
+            workspaceId={workspace.id}
+            viewerId={kommoViewerId}
+            connections={kommoSettings.connections}
+            loadState={kommoSettings.state}
+            allChannels={allInboundChannels}
+            canManage={canManageKommo}
+            licenseLocked={licenseLocked}
           />
-
-          {inboundWebhookData &&
-          (inboundWebhookData.capabilities.enabled ||
-            inboundWebhookData.connections.length > 0) ? (
-            <InboundWebhookPanel
-              capabilities={inboundWebhookData.capabilities}
-              connections={inboundWebhookData.connections}
-              providerRules={inboundWebhookData.providerRules}
-              providerRulesEnabled={inboundWebhookData.providerRulesEnabled}
-              metaConfiguration={metaManualResult.data}
-              canManage={canManageIntegrations}
-              createAction={createInboundWebhookConnectionAction}
-              rotateSecretAction={rotateInboundWebhookSecretAction}
-              setConnectionStatusAction={
-                setInboundWebhookConnectionStatusAction
-              }
-              removeConnectionAction={removeInboundWebhookConnectionAction}
-              createChannelAction={createInboundWebhookChannelAction}
-              setChannelStatusAction={setInboundWebhookChannelStatusAction}
-              saveRoutesAction={saveInboundWebhookChannelRoutesAction}
-            />
-          ) : null}
-
-          {usesExternalWhatsapp ? (
-            <div className="surface-panel whatsapp-instance-panel">
-              <span className="eyebrow">Integracao externa MySQL</span>
-              <h2>Dados recebidos por integracao externa do MySQL</h2>
-              <p className="muted">
-                Esta fonte e monitorada pelo conector externo; nao ha instancia
-                ou cobranca para configurar neste painel.
-              </p>
-              <div className="metric-grid compact">
-                <div className="metric-card">
-                  <span className="micro-label">Ultima sincronizacao</span>
-                  <strong>
-                    {sourceSyncLabel(
-                      pipeline?.whatsappSource?.lastSyncCompletedAt,
-                    )}
-                  </strong>
-                </div>
-                <div className="metric-card">
-                  <span className="micro-label">Status</span>
-                  <strong>
-                    {statusLabel(
-                      pipeline?.whatsappSource?.lastSyncStatus ?? "pending",
-                    )}
-                  </strong>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="surface-panel whatsapp-instance-panel">
-              <span className="eyebrow">WhatsApp Business</span>
-              <h2>Instancia Uazapi (BYO)</h2>
-              <p className="muted">
-                Esta edicao conecta uma unica instancia Uazapi configurada por
-                variavel de ambiente (UAZAPI_BASE_URL/UAZAPI_TOKEN). Nao ha
-                marketplace de instancias nem cobranca dentro do painel.
-              </p>
-              <div className="metric-grid compact">
-                <div className="metric-card">
-                  <span className="micro-label">Status Uazapi</span>
-                  <strong>
-                    {statusLabel(
-                      health?.providers.find(
-                        (item) => item.provider === "uazapi_byo",
-                      )?.status ?? "not_configured",
-                    )}
-                  </strong>
-                </div>
-                <div className="metric-card">
-                  <span className="micro-label">Webhooks recebidos</span>
-                  <strong>
-                    {inboundConnectionCount > 0
-                      ? `${inboundConnectionCount} webhook${inboundConnectionCount === 1 ? "" : "s"}`
-                      : "Nenhum webhook ativo"}
-                  </strong>
-                </div>
-              </div>
-              {legacyWhatsappInstancesResult.state === "error" ? (
-                <p className="muted">Nao foi possivel carregar instancias.</p>
-              ) : legacyWhatsappInstances.length > 0 ? (
-                <div className="inbound-connection-list">
-                  {legacyWhatsappInstances.map((instance) => (
-                    <div className="inbound-connection-body" key={instance.id}>
-                      <strong>{instance.name}</strong>
-                      <span>{instance.providerInstanceId ?? instance.id}</span>
-                      <span>{statusLabel(instance.billingStatus)}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          )}
         </div>
-      </section>
+      ) : canManageKommo || !workspace ? (
+        crmUnavailableNote("Kommo")
+      ) : (
+        crmOwnerOnlyNote
+      ),
+    pipedrive:
+      workspace && kommoViewerId && canManageKommo ? (
+        <div className="integration-modal-stack">
+          <PipedriveCrmManager
+            workspaceId={workspace.id}
+            viewerId={kommoViewerId}
+            connections={pipedriveSettings.connections}
+            loadState={pipedriveSettings.state}
+            allChannels={allInboundChannels}
+            canManage={canManageKommo}
+            licenseLocked={licenseLocked}
+          />
+        </div>
+      ) : canManageKommo || !workspace ? (
+        crmUnavailableNote("Pipedrive")
+      ) : (
+        crmOwnerOnlyNote
+      ),
+  };
+
+  // Each panel is rendered inside a Modal next to other children; a keyed
+  // Fragment per provider keeps React from warning about an unkeyed list.
+  const keyedPanels: typeof panels = Object.fromEntries(
+    Object.entries(panels).map(([provider, panel]) => [
+      provider,
+      <Fragment key={provider}>{panel}</Fragment>,
+    ]),
+  );
+
+  const inboundErrorBanner =
+    inboundWebhookResult.state === "error" ? (
+      <div className="feedback-banner warn" role="status">
+        <strong>Algumas conexões não carregaram</strong>
+        <span>
+          Parte das informações está indisponível agora. Atualize a página em
+          instantes.
+        </span>
+      </div>
+    ) : null;
+
+  const whatsappIntro = (
+    <>
+      {inboundErrorBanner}
+      {usesExternalWhatsapp ? (
+        <div className="surface-panel whatsapp-instance-panel">
+          <span className="eyebrow">Integracao externa MySQL</span>
+          <h2>Dados recebidos por integracao externa do MySQL</h2>
+          <p className="muted">
+            Esta fonte e monitorada pelo conector externo; nao ha instancia ou
+            cobranca para configurar neste painel.
+          </p>
+          <div className="metric-grid compact">
+            <div className="metric-card">
+              <span className="micro-label">Ultima sincronizacao</span>
+              <strong>
+                {sourceSyncLabel(pipeline?.whatsappSource?.lastSyncCompletedAt)}
+              </strong>
+            </div>
+            <div className="metric-card">
+              <span className="micro-label">Status</span>
+              <strong>
+                {statusLabel(
+                  pipeline?.whatsappSource?.lastSyncStatus ?? "pending",
+                )}
+              </strong>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+
+  // Formulários de regra oferecem "Padrão do workspace (X)" e as moedas padrão
+  // dos CRMs. Lido por último para manter a ordem das requisições anteriores.
+  const currencySettings = await getWorkspaceCurrencySettings();
+
+  return (
+    <WorkspaceCurrencyProvider currency={currencySettings?.conversionCurrency}>
+    <section className="page-stack page-standard integrations-page">
+      <header className="page-header">
+        <div>
+          <span className="eyebrow">Integracoes</span>
+          <h1>Central de integracoes</h1>
+          <p>
+            {usesExternalWhatsapp
+              ? "Acompanhe a origem das conversas, as contas Meta, o CRM e o caminho dos eventos desta conta."
+              : "Conecte seus numeros de WhatsApp, plataformas de atendimento, CRM e a conta de anuncios. Clique em um card para conectar ou gerenciar."}
+          </p>
+        </div>
+        {isPlatformOperator ? (
+          <div className="header-actions">
+            <span
+              className={`status-chip${hasIntegrationError ? " warn" : ""}`}
+            >
+              {hasIntegrationError ? "API indisponivel" : "API conectada"}
+            </span>
+            <span className="status-chip">
+              {integrations.length} provedores
+            </span>
+          </div>
+        ) : null}
+      </header>
+
+      {workspacePermissionsUnavailable ? (
+        <div className="feedback-banner warn" role="alert">
+          <strong>Permissoes temporariamente indisponiveis</strong>
+          <span>
+            Nao foi possivel confirmar as permissoes agora. A API validara a
+            acao ao continuar.
+          </span>
+          <a className="button" href="/integrations">
+            Tentar novamente
+          </a>
+        </div>
+      ) : null}
+
+      {isPlatformOperator ? (
+        <details className="integration-technical-health">
+          <summary>
+            <span>
+              <Activity size={17} aria-hidden="true" />
+              Saude tecnica dos provedores
+            </span>
+            <small>{integrations.length} provedores monitorados</small>
+          </summary>
+          <div className="integration-grid">
+            {integrations.length > 0 ? (
+              integrations.map((item) => (
+                <article className="integration-card" key={item.title}>
+                  <span
+                    className={`status-chip${item.tone ? ` ${item.tone}` : ""}`}
+                  >
+                    {item.status}
+                  </span>
+                  <div>
+                    <span className="micro-label">{item.title}</span>
+                    <strong>{item.detail}</strong>
+                  </div>
+                  <p className="muted">{item.description}</p>
+                  <button className="button" type="button">
+                    Ver diagnostico
+                  </button>
+                </article>
+              ))
+            ) : (
+              <article className="integration-card">
+                <span className="status-chip warn">
+                  {healthResult.state === "error"
+                    ? "API indisponivel"
+                    : "Sem provedores"}
+                </span>
+                <div>
+                  <span className="micro-label">Integracoes</span>
+                  <strong>
+                    {healthResult.state === "error"
+                      ? "Nao foi possivel carregar integracoes"
+                      : "Nenhuma integracao retornada"}
+                  </strong>
+                </div>
+                <p className="muted">
+                  A lista sera preenchida somente com provedores retornados pelo
+                  backend.
+                </p>
+              </article>
+            )}
+          </div>
+        </details>
+      ) : null}
+
+      <IntegrationsHub
+        cards={cards}
+        panels={keyedPanels}
+        quickLinks={{
+          uazapi_byo: [rulesLink],
+          nod_api: [rulesLink],
+          waha: [rulesLink],
+          zapi: [rulesLink],
+          meta_cloud: [rulesLink],
+          umbler: [rulesLink],
+          gupshup: [rulesLink],
+          data_crazy: [rulesLink],
+          unnichat: [rulesLink],
+          payt: [rulesLink],
+        }}
+        tabIntro={{
+          whatsapp: whatsappIntro,
+          attendance: inboundErrorBanner,
+          crm: !workspace || canManageKommo ? undefined : crmOwnerOnlyNote,
+        }}
+        initialTab={initialHubState.tab}
+        initialProvider={initialHubState.provider}
+        notice={
+          pageNotice ? (
+            <div className={`feedback-banner ${pageNotice.tone}`} role="status">
+              <strong>{pageNotice.title}</strong>
+              <span>{pageNotice.message}</span>
+            </div>
+          ) : null
+        }
+        noticeProvider={initialHubState.provider}
+      />
 
       <section
         className="integration-domain-section integration-flow-domain"
@@ -1596,7 +2044,6 @@ export default async function IntegrationsPage({
         aria-labelledby="integration-flow-title"
       >
         <header className="integration-domain-heading">
-          <span className="integration-domain-number">03</span>
           <div>
             <span className="eyebrow">Pipeline de sinal</span>
             <h2 id="integration-flow-title">
@@ -1653,5 +2100,6 @@ export default async function IntegrationsPage({
         </div>
       </section>
     </section>
+    </WorkspaceCurrencyProvider>
   );
 }

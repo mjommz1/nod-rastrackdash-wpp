@@ -1,4 +1,15 @@
+# Git metadata: only what scripts/resolve-build-identity.mjs needs to read the
+# installed commit enters the build context. config (remotes may embed
+# provider tokens), hooks, logs and info stay out; the Dockerfile `source`
+# stage deletes this copy before any image layer is assembled.
 .git
+!.git/HEAD
+!.git/shallow
+!.git/packed-refs
+!.git/refs
+!.git/objects
+!.git/index
+
 .codex
 .codex-logs
 .agents

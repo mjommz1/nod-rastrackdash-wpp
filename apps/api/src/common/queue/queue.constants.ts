@@ -8,6 +8,7 @@ export const INBOUND_WEBHOOK_QUEUE = "inbound-webhooks";
 export const INBOUND_WEBHOOK_REPLAY_QUEUE = "inbound-webhook-replay";
 export const INBOUND_WEBHOOK_PRODUCTION_QUEUE = "inbound-webhook-production";
 export const OPS_ALERTS_QUEUE = "ops-alerts";
+export const KOMMO_WEBHOOK_QUEUE = "kommo-webhooks";
 
 export interface InboundWebhookJobPayload {
   deliveryId: string;
@@ -18,6 +19,11 @@ export interface InboundWebhookJobPayload {
 
 export interface InboundWebhookReplayJobPayload {
   batchId: string;
+  workspaceId: string;
+}
+
+export interface KommoWebhookJobPayload {
+  eventId: string;
   workspaceId: string;
 }
 

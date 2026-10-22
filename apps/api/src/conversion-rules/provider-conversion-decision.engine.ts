@@ -8,6 +8,7 @@ import { Injectable } from "@nestjs/common";
 import {
   conversionEventDedupeMode,
   conversionEventValuePolicy,
+  normalizeCurrencyCode,
 } from "@wpptrack/shared";
 import {
   extractSingleMoneyValueCents,
@@ -283,10 +284,22 @@ export class ProviderConversionDecisionEngine {
   ): StructuredCatalogTestMessageResultDto {
     // valueMode "message_extracted": the message carries the price, the
     // configured average value is only a fallback. Never invent a value.
-    const extractedValueCents = this.extractedValueCents(input);
+    // An automation callback (Payt) carries the sale value itself; the
+    // configured average value stays the fallback.
+    const extractedValueCents =
+      input.occurrence.source === "automation"
+        ? (input.occurrence.observedValueCents ?? null)
+        : this.extractedValueCents(input);
     const valueCents = extractedValueCents ?? input.rule.defaultValueCents;
+    // Moeda: a da venda (payload) -> a da regra -> a do workspace -> BRL.
+    // A rule without currency (null = inherit) uses the workspace currency.
     const currency =
-      input.rule.defaultCurrency ?? (extractedValueCents ? "BRL" : null);
+      (input.occurrence.source === "automation"
+        ? (input.occurrence.observedCurrency ?? null)
+        : null) ??
+      // Código fora de BRL/USD/EUR na regra conta como regra sem moeda.
+      normalizeCurrencyCode(input.rule.defaultCurrency) ??
+      (valueCents ? (input.occurrence.fallbackCurrency ?? "BRL") : null);
     const matched = Boolean(valueCents && currency);
 
     return {
@@ -303,7 +316,9 @@ export class ProviderConversionDecisionEngine {
       observedPaymentValueCents: matched ? extractedValueCents : null,
       catalogVariantId: null,
       contentName: input.rule.defaultContentName,
-      currency: matched ? currency : input.rule.defaultCurrency,
+      currency: matched
+        ? currency
+        : normalizeCurrencyCode(input.rule.defaultCurrency),
     };
   }
 
@@ -382,6 +397,9 @@ export class ProviderConversionDecisionEngine {
       externalEventId: occurrence.externalEventId,
       externalMessageId: occurrence.externalMessageId,
       occurrenceKey: occurrence.occurrenceKey,
+      ...(occurrence.purchaseKey
+        ? { purchaseKey: occurrence.purchaseKey }
+        : {}),
       businessDedupePolicy,
       eventName: occurrence.eventName,
       occurredAt: occurrence.occurredAt,
@@ -399,6 +417,11 @@ export class ProviderConversionDecisionEngine {
       throw new Error("A business dedupe key requires a resolved paid lead");
     }
 
+    // A sale with a merchant order identity (Payt) is deduplicated forever by
+    // that identity (seller + order + event), never by the lead window.
+    if (input.occurrence.provider === "payt" && input.occurrence.purchaseKey) {
+      return { mode: "lifetime", scopeKey: input.occurrence.purchaseKey };
+    }
     const scopeKey = [
       input.rule.eventName,
       input.occurrence.workspaceId,

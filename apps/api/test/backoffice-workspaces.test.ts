@@ -61,6 +61,17 @@ type State = {
     supportWorkspaceId: string | null;
     supportWorkspaceStartedAt: Date | null;
   }>;
+  // Deliberately schema-independent fixture rows: the workspace delete
+  // consumer must remove these through its Prisma delegates, not through a
+  // migration-only cascade assumption.
+  kommo: Record<
+    | "connection"
+    | "pipeline"
+    | "rule"
+    | "webhookEvent"
+    | "dedupe",
+    Array<{ id: string; workspaceId: string; connectionId?: string }>
+  >;
 };
 
 function makeHarness(initialUsers: UserState[] = []) {
@@ -72,6 +83,13 @@ function makeHarness(initialUsers: UserState[] = []) {
     tokens: [],
     audits: [],
     sessions: [],
+    kommo: {
+      connection: [],
+      pipeline: [],
+      rule: [],
+      webhookEvent: [],
+      dedupe: [],
+    },
   };
   let nextId = 1;
   const id = (prefix: string) => `${prefix}_${nextId++}`;
@@ -149,6 +167,12 @@ function makeHarness(initialUsers: UserState[] = []) {
         return workspace;
       }),
       delete: vi.fn(async ({ where }: any) => {
+        if (
+          Object.values(state.kommo)
+            .flat()
+            .some((row) => row.workspaceId === where.id)
+        )
+          throw new Error("workspace Restrict dependency remains");
         const index = state.workspaces.findIndex(
           (workspace) => workspace.id === where.id,
         );
@@ -255,7 +279,11 @@ function makeHarness(initialUsers: UserState[] = []) {
         return { count };
       }),
     },
-    $queryRaw: vi.fn(async () => {
+    $queryRaw: vi.fn(async (query: any) => {
+      if (query?.sql?.includes("pg_try_advisory_xact_lock")) {
+        events.push("lock:kommo-dispatch");
+        return [{ acquired: true }];
+      }
       return [];
     }),
     $executeRaw: vi.fn(async () => {
@@ -267,21 +295,36 @@ function makeHarness(initialUsers: UserState[] = []) {
     "purchaseValueAdjustment",
     "purchaseReviewItem",
     "purchaseReview",
+    "providerPurchaseClaim",
     "providerConversionRuleExecution",
     "providerConversionDecisionAudit",
     "providerConversionShadowComparison",
     "providerConversionRuleChannel",
     "providerConversionRuleEndpoint",
+    "providerRuleCreateClaim",
     "providerConversionRuleConfig",
     "conversionRule",
     "conversionCatalogVariant",
     "conversionCatalogAttribute",
     "conversionCatalog",
+    "kommoConversionDedupe",
+    "kommoWebhookEvent",
+    "kommoConversionRule",
+    "kommoPipelineCatalog",
+    "kommoConnection",
+    "pipedriveConversionDedupe",
+    "pipedriveWebhookEvent",
+    "pipedriveConversionRule",
+    "pipedriveStageCatalog",
+    "pipedrivePipelineCatalog",
+    "pipedriveConnection",
     "inboundWebhookReplayItem",
     "inboundWebhookReplayBatch",
     "inboundWebhookProductionItem",
     "inboundWebhookEvent",
     "inboundWebhookDelivery",
+    "integrationEndpointEvent",
+    "integrationEndpoint",
     "inboundWebhookChannelRoute",
     "inboundWebhookChannel",
     "inboundWebhookConnection",
@@ -327,6 +370,54 @@ function makeHarness(initialUsers: UserState[] = []) {
     events.push("update:providerConversionDecisionAudit");
     return { count: 0 };
   });
+  prisma.providerConversionRuleConfig.updateMany = vi.fn(async () => {
+    events.push("update:providerConversionRuleConfig");
+    return { count: 0 };
+  });
+  const deleteKommo = (
+    kind: keyof State["kommo"],
+    delegate: string,
+  ) =>
+    vi.fn(async ({ where }: any) => {
+      events.push(`delete:${delegate}`);
+      const before = state.kommo[kind].length;
+      state.kommo[kind] = state.kommo[kind].filter(
+        (row) => row.workspaceId !== where.workspaceId,
+      );
+      return { count: before - state.kommo[kind].length };
+    });
+  prisma.kommoConversionDedupe.deleteMany = deleteKommo(
+    "dedupe",
+    "kommoConversionDedupe",
+  );
+  prisma.kommoWebhookEvent.deleteMany = deleteKommo(
+    "webhookEvent",
+    "kommoWebhookEvent",
+  );
+  prisma.kommoConversionRule.deleteMany = deleteKommo(
+    "rule",
+    "kommoConversionRule",
+  );
+  prisma.kommoPipelineCatalog.deleteMany = deleteKommo(
+    "pipeline",
+    "kommoPipelineCatalog",
+  );
+  prisma.kommoConnection.deleteMany = vi.fn(async ({ where }: any) => {
+    events.push("delete:kommoConnection");
+    if (
+      ["pipeline", "rule", "webhookEvent"].some((kind) =>
+        state.kommo[kind as keyof State["kommo"]].some(
+          (row) => row.workspaceId === where.workspaceId,
+        ),
+      )
+    )
+      throw new Error("KommoConnection Restrict child remains");
+    const before = state.kommo.connection.length;
+    state.kommo.connection = state.kommo.connection.filter(
+      (row) => row.workspaceId !== where.workspaceId,
+    );
+    return { count: before - state.kommo.connection.length };
+  });
   prisma.$transaction = vi.fn(async (callback: (tx: any) => unknown) => {
     const snapshot = structuredClone(state);
     try {
@@ -338,6 +429,7 @@ function makeHarness(initialUsers: UserState[] = []) {
       state.tokens = snapshot.tokens;
       state.audits = snapshot.audits;
       state.sessions = snapshot.sessions;
+      state.kommo = snapshot.kommo;
       throw error;
     }
   });
@@ -1038,14 +1130,209 @@ describe("platform workspace access", () => {
       );
     };
 
+    before(
+      "delete:providerPurchaseClaim",
+      "delete:providerConversionRuleExecution",
+    );
+    before("delete:providerPurchaseClaim", "delete:conversionEventLog");
     before("delete:conversionCatalogVariant", "delete:conversionCatalog");
     before("delete:conversionCatalogAttribute", "delete:conversionCatalog");
     before("delete:conversionCatalog", "delete:providerConversionRuleConfig");
+    before(
+      "delete:providerRuleCreateClaim",
+      "delete:providerConversionRuleConfig",
+    );
+    before(
+      "update:providerConversionRuleConfig",
+      "delete:providerConversionRuleConfig",
+    );
     before("delete:diagnosticEvent", "delete:conversionEventLog");
     before(
       "update:providerConversionDecisionAudit",
       "delete:providerConversionDecisionAudit",
     );
+    before("delete:kommoConversionDedupe", "delete:conversionEventLog");
+    before("delete:kommoConversionDedupe", "delete:inboundWebhookChannelRoute");
+    before("delete:kommoWebhookEvent", "delete:kommoConnection");
+    before("delete:kommoConversionRule", "delete:kommoConnection");
+    before("delete:kommoPipelineCatalog", "delete:kommoConnection");
+    before("delete:kommoConnection", "delete:inboundWebhookChannelRoute");
+    before("delete:kommoConnection", "delete:lead");
+    before("delete:kommoConnection", "delete:metaConversionDestination");
+    // Pipedrive Restrict children before their parents.
+    before("delete:pipedriveConversionDedupe", "delete:pipedriveWebhookEvent");
+    before("delete:pipedriveConversionDedupe", "delete:conversionEventLog");
+    before("delete:pipedriveWebhookEvent", "delete:pipedriveConnection");
+    before("delete:pipedriveWebhookEvent", "delete:lead");
+    before("delete:pipedriveConversionRule", "delete:pipedriveConnection");
+    before("delete:pipedriveStageCatalog", "delete:pipedrivePipelineCatalog");
+    before("delete:pipedrivePipelineCatalog", "delete:pipedriveConnection");
+    // Fase 5.3: receipts before their URL, both before the workspace.
+    before("delete:integrationEndpointEvent", "delete:integrationEndpoint");
+    before("delete:inboundWebhookDelivery", "delete:integrationEndpoint");
+  });
+
+  it("removes populated Kommo Restrict rows once, scoped to the confirmed workspace", async () => {
+    const harness = makeHarness();
+    harness.state.workspaces.push(
+      {
+        id: "workspace-delete",
+        name: "Delete Me",
+        slug: "delete-me",
+        operationalStatus: "active",
+        createdAt: new Date("2026-08-26T10:00:00.000Z"),
+      },
+      {
+        id: "workspace-keep",
+        name: "Keep Me",
+        slug: "keep-me",
+        operationalStatus: "active",
+        createdAt: new Date("2026-08-26T10:00:00.000Z"),
+      },
+    );
+    for (const workspaceId of ["workspace-delete", "workspace-keep"]) {
+      const suffix = workspaceId === "workspace-delete" ? "delete" : "keep";
+      harness.state.kommo.connection.push({
+        id: `connection-${suffix}`,
+        workspaceId,
+      });
+      harness.state.kommo.pipeline.push({
+        id: `pipeline-${suffix}`,
+        workspaceId,
+        connectionId: `connection-${suffix}`,
+      });
+      harness.state.kommo.rule.push({
+        id: `rule-${suffix}`,
+        workspaceId,
+        connectionId: `connection-${suffix}`,
+      });
+      harness.state.kommo.webhookEvent.push({
+        id: `event-${suffix}`,
+        workspaceId,
+        connectionId: `connection-${suffix}`,
+      });
+      harness.state.kommo.dedupe.push({
+        id: `dedupe-${suffix}`,
+        workspaceId,
+      });
+    }
+    const service = new PlatformWorkspaceAccessService(
+      harness.prisma as never,
+      emailQueue as never,
+    );
+
+    await service.deleteWorkspace(
+      "workspace-delete",
+      { confirmation: "delete-me" },
+      owner,
+    );
+
+    expect(harness.state.kommo).toEqual({
+      connection: [{ id: "connection-keep", workspaceId: "workspace-keep" }],
+      pipeline: [
+        {
+          id: "pipeline-keep",
+          workspaceId: "workspace-keep",
+          connectionId: "connection-keep",
+        },
+      ],
+      rule: [
+        {
+          id: "rule-keep",
+          workspaceId: "workspace-keep",
+          connectionId: "connection-keep",
+        },
+      ],
+      webhookEvent: [
+        {
+          id: "event-keep",
+          workspaceId: "workspace-keep",
+          connectionId: "connection-keep",
+        },
+      ],
+      dedupe: [{ id: "dedupe-keep", workspaceId: "workspace-keep" }],
+    });
+    for (const delegate of [
+      "kommoConversionDedupe",
+      "kommoWebhookEvent",
+      "kommoConversionRule",
+      "kommoPipelineCatalog",
+      "kommoConnection",
+    ]) {
+      expect(harness.prisma[delegate].deleteMany).toHaveBeenCalledTimes(1);
+      expect(harness.prisma[delegate].deleteMany).toHaveBeenCalledWith({
+        where: { workspaceId: "workspace-delete" },
+      });
+    }
+  });
+
+  it("takes the sender lock before reads and rolls all scoped work back on a child wipe failure", async () => {
+    const harness = makeHarness();
+    harness.state.workspaces.push({
+      id: "workspace-delete",
+      name: "Delete Me",
+      slug: "delete-me",
+      operationalStatus: "active",
+      createdAt: new Date("2026-08-26T10:00:00.000Z"),
+    });
+    harness.state.kommo.connection.push({
+      id: "connection-delete",
+      workspaceId: "workspace-delete",
+    });
+    harness.state.kommo.dedupe.push({
+      id: "dedupe-delete",
+      workspaceId: "workspace-delete",
+    });
+    harness.prisma.kommoConnection.deleteMany.mockRejectedValueOnce(
+      new Error("synthetic child wipe failure"),
+    );
+    const service = new PlatformWorkspaceAccessService(
+      harness.prisma as never,
+      emailQueue as never,
+    );
+
+    await expect(
+      service.deleteWorkspace(
+        "workspace-delete",
+        { confirmation: "delete-me" },
+        owner,
+      ),
+    ).rejects.toThrow("synthetic child wipe failure");
+
+    expect(harness.events[0]).toBe("lock:kommo-dispatch");
+    // Kommo and Pipedrive connection row locks, both before any read.
+    expect(harness.prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    for (const order of harness.prisma.$queryRaw.mock.invocationCallOrder)
+      expect(order).toBeLessThan(
+        harness.prisma.workspace.findUnique.mock.invocationCallOrder[0],
+      );
+    expect(harness.state.workspaces).toHaveLength(1);
+    expect(harness.state.kommo.connection).toEqual([
+      { id: "connection-delete", workspaceId: "workspace-delete" },
+    ]);
+    expect(harness.state.kommo.dedupe).toEqual([
+      { id: "dedupe-delete", workspaceId: "workspace-delete" },
+    ]);
+    expect(harness.state.audits).toEqual([]);
+  });
+
+  it("fails before reads or success audit when the shared sender lock is unavailable", async () => {
+    const harness = makeHarness();
+    harness.prisma.$queryRaw.mockResolvedValueOnce([{ acquired: false }]);
+    const service = new PlatformWorkspaceAccessService(
+      harness.prisma as never,
+      emailQueue as never,
+    );
+
+    await expect(
+      service.deleteWorkspace(
+        "workspace-delete",
+        { confirmation: "delete-me" },
+        owner,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(harness.prisma.workspace.findUnique).not.toHaveBeenCalled();
+    expect(harness.state.audits).toEqual([]);
   });
 
   it("rejects a wrong confirmation and an unknown route id without deleting another workspace", async () => {

@@ -1,0 +1,34 @@
+{
+  "integration_key": "[REDACTED]",
+  "started_at": "2026-09-16 10:54:23.000000",
+  "updated_at": "2026-09-16 10:57:35.000000",
+  "seller_id": "SELLER",
+  "test": false,
+  "type": "cash_on_delivery",
+  "tangible": true,
+  "cart_id": "CARTCOD1",
+  "status": "order_confirmed",
+  "transaction_id": "SYNTHCOD1",
+  "customer": {
+    "name": "[REDACTED]",
+    "email": "[REDACTED]@example.com",
+    "doc": "[REDACTED]",
+    "phone": "63999990071",
+    "code": "CUST1"
+  },
+  "product": {
+    "name": "Produto COD",
+    "price": 36699,
+    "code": "PROD1",
+    "type": "grouped",
+    "quantity": 1
+  },
+  "transaction": {
+    "payment_method": "cash_on_delivery",
+    "payment_status": "waiting_delivery",
+    "total_price": 36699,
+    "quantity": 1,
+    "created_at": "2026-09-16 10:57:35",
+    "updated_at": "2026-09-16 10:57:35"
+  }
+}

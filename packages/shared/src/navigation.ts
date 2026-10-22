@@ -6,6 +6,7 @@ export const clientNavigation = [
   { id: "reports", label: "Relatorios" },
   { id: "events", label: "Eventos Meta" },
   { id: "integrations", label: "Integracoes" },
+  { id: "conversions", label: "Conversões" },
   { id: "settings", label: "Configuracoes" }
 ] as const;
 
@@ -25,6 +26,7 @@ const clientNavPermissionRequirement: Partial<
   Record<ClientNavId, keyof WorkspacePermissionsDto>
 > = {
   integrations: "canManageIntegrations",
+  conversions: "canManageIntegrations",
   settings: "canManageWorkspaceSettings"
 };
 

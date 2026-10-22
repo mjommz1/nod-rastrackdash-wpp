@@ -1,18 +1,49 @@
 import type {
   CampaignReportRowDto,
+  CurrencyCode,
   MetaAssetsDto,
+  ReportCurrencyGroupDto,
   ReportDailyComparisonPointDto,
   ReportFunnelStepDto,
   ReportOverviewDto,
 } from "@wpptrack/shared";
 import Link from "next/link";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import {
+  CurrencyKpiGroups,
+  ExchangeRateMissingNote,
+} from "../../../components/currency-kpi-groups";
 import { PresentationMask } from "../../../components/presentation-mask";
+import {
+  joinAdAccountIds,
+  parseAdAccountIdsParam,
+  setAdAccountParams,
+  splitAdAccountIds,
+} from "../../../lib/ad-account-params";
+import {
+  adAccountCurrencyMap,
+  getAdAccountCurrencies,
+} from "../../../lib/currency-settings";
+import {
+  currencyKpiGroup,
+  exchangeRateMissingLabel,
+  formatReportMoney,
+  mixedCurrencyGroups,
+  reportCurrency,
+  singleCurrencyRateGap,
+} from "../../../lib/report-currency";
 import { serverApiFetch } from "../../../lib/server-api";
 import { OverviewFilters } from "./overview-filters";
+import {
+  OverviewLeadsBlock,
+  overviewLeadsHints,
+  type OverviewLeadsBlockItem,
+} from "./overview-leads-block";
+import { overviewLeadsHref } from "./overview-leads-links";
 
 type OverviewSearchParams = Record<string, string | string[] | undefined>;
 type OverviewFiltersInput = {
+  /** Contas de anúncio juntas por "," (`adAccountId` ou `adAccountIds` na URL). */
   adAccountId?: string;
   businessId?: string;
   since?: string;
@@ -25,15 +56,9 @@ type OverviewReportResult = {
   state: OverviewFetchState;
 };
 
-function money(cents: number | null) {
-  if (cents === null) {
-    return "-";
-  }
-
-  return (cents / 100).toLocaleString("pt-BR", {
-    currency: "BRL",
-    style: "currency",
-  });
+/** Dinheiro na moeda do recorte (BRL quando todas as contas são em real). */
+function money(cents: number | null, currency: CurrencyCode = "BRL") {
+  return formatReportMoney(cents, currency);
 }
 
 async function getOverviewReport(
@@ -54,9 +79,7 @@ async function getOverviewReport(
       params.set("businessId", filters.businessId);
     }
 
-    if (filters.adAccountId) {
-      params.set("adAccountId", filters.adAccountId);
-    }
+    setAdAccountParams(params, splitAdAccountIds(filters.adAccountId));
 
     const report = await serverApiFetch<ReportOverviewDto>(
       `/reports/campaigns?${params.toString()}`,
@@ -230,6 +253,34 @@ function aggregateFunnelSteps(
   });
 }
 
+/** "R$ 5,00 · US$ 1,00": um custo por moeda, na ordem dos blocos. */
+function perCurrencyCost(
+  groups: ReportCurrencyGroupDto[],
+  select: (group: ReportCurrencyGroupDto) => number | null | undefined,
+): string | null {
+  const parts = groups.flatMap((group) => {
+    const cents = select(group);
+
+    return typeof cents === "number" ? [money(cents, group.currency)] : [];
+  });
+
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** Custo de uma etapa do funil em cada moeda (os grupos têm o próprio funil). */
+function perCurrencyStageCost(
+  stage: ReportFunnelStepDto,
+  groups: ReportCurrencyGroupDto[],
+): string {
+  return (
+    perCurrencyCost(groups, (group) =>
+      stage.key === "meta_conversations"
+        ? group.costPerMetaConversationCents
+        : group.funnelSteps.find((step) => step.key === stage.key)?.costCents,
+    ) ?? "-"
+  );
+}
+
 function costPer(spendCents: number, count: number): number | null {
   return count > 0 ? Math.floor(spendCents / count) : null;
 }
@@ -291,7 +342,7 @@ function purchaseBreakdownLabel(
 function funnelStageCostLabel(stage: ReportFunnelStepDto): string {
   const labels: Record<string, string> = {
     meta_conversations: "Custo por conversa Meta",
-    real_conversations: "Custo por lead",
+    real_conversations: "Custo por lead novo",
     qualified_lead: "Custo por lead qualificado",
     purchase: "Custo por compra",
     first_purchase: "Custo por primeira compra",
@@ -305,9 +356,7 @@ function funnelStageCostLabel(stage: ReportFunnelStepDto): string {
   }
 
   const normalized = stage.label.trim().toLocaleLowerCase("pt-BR");
-  return normalized.length > 0
-    ? `Custo por ${normalized}`
-    : "Custo por etapa";
+  return normalized.length > 0 ? `Custo por ${normalized}` : "Custo por etapa";
 }
 
 /** Primary KPI cards for configured journey events beyond the fixed set. */
@@ -332,14 +381,21 @@ function configuredJourneyMetric(
   );
 }
 
+/** Optional API counts: absent on older payloads, shown as "-". */
+function optionalCount(value: number | undefined): number | null {
+  return typeof value === "number" ? value : null;
+}
+
 function reportsHref(filters: OverviewFiltersInput): string {
   const params = new URLSearchParams();
 
   for (const [key, value] of Object.entries(filters)) {
-    if (value) {
+    if (value && key !== "adAccountId") {
       params.set(key, value);
     }
   }
+
+  setAdAccountParams(params, splitAdAccountIds(filters.adAccountId));
 
   const query = params.toString();
   return query ? `/reports?${query}` : "/reports";
@@ -355,17 +411,51 @@ export default async function OverviewPage({
     since: asStringParam(resolvedSearchParams.since),
     until: asStringParam(resolvedSearchParams.until),
     businessId: asStringParam(resolvedSearchParams.businessId),
-    adAccountId: asStringParam(resolvedSearchParams.adAccountId),
+    adAccountId:
+      joinAdAccountIds(
+        parseAdAccountIdsParam(
+          resolvedSearchParams.adAccountId,
+          resolvedSearchParams.adAccountIds,
+        ),
+      ) || undefined,
   };
-  const [{ report, state: reportState }, metaAssets] = await Promise.all([
-    getOverviewReport(filters),
-    getMetaAssets(),
-  ]);
+  const [{ report, state: reportState }, metaAssets, adAccountCurrencies] =
+    await Promise.all([
+      getOverviewReport(filters),
+      getMetaAssets(),
+      getAdAccountCurrencies(),
+    ]);
   const reportingAccounts = (metaAssets?.reportingAccounts ?? []).filter(
     (account) => account.active,
   );
+  const accountCurrencies = adAccountCurrencyMap(
+    reportingAccounts,
+    adAccountCurrencies,
+  );
+  const selectedAdAccountIds = splitAdAccountIds(filters.adAccountId);
   const campaigns = report.campaigns;
   const campaign = report.summary ?? sumCampaigns(campaigns);
+  // Uma moeda só: tudo igual a antes (em real, sem rótulo novo). Duas ou mais
+  // com movimento: um bloco por moeda, sem somar valores de moedas diferentes.
+  const currencyGroups = mixedCurrencyGroups(report, "summary");
+  const mixedCurrency = currencyGroups.length > 0;
+  const reportMoneyCurrency = reportCurrency(report, "summary");
+  const rateGap = mixedCurrency
+    ? { exchangeRateMissing: false, unconvertedRevenue: [] }
+    : singleCurrencyRateGap(report, "summary");
+  const fmt = (cents: number | null) => money(cents, reportMoneyCurrency);
+  const stageCostLabel = (stage: ReportFunnelStepDto): string =>
+    mixedCurrency
+      ? perCurrencyStageCost(stage, currencyGroups)
+      : fmt(stage.costCents ?? null);
+  const costPerLeadLabel = mixedCurrency
+    ? perCurrencyCost(
+        currencyGroups,
+        (group) => group.costPerRealConversationCents,
+      )
+    : campaign.costPerRealConversationCents !== null
+      ? fmt(campaign.costPerRealConversationCents)
+      : null;
   const dataAvailable = reportState !== "error";
   const trackedRate =
     dataAvailable && campaign.trackingRate !== null
@@ -392,6 +482,50 @@ export default async function OverviewPage({
     selectedBusiness?.businessName ??
     "Todas as contas";
   const detailHref = reportsHref(filters);
+  const leadsPeriod = {
+    since: report.since ?? filters.since,
+    until: report.until ?? filters.until,
+  };
+  const newLeadsHref = overviewLeadsHref(filters, leadsPeriod, "new");
+  const leadsBlockItems: OverviewLeadsBlockItem[] = [
+    {
+      key: "new",
+      label: "Leads novos",
+      value: campaign.realConversations,
+      caption:
+        costPerLeadLabel !== null
+          ? `Custo por lead novo ${costPerLeadLabel}`
+          : "1º contato no período",
+      hint: overviewLeadsHints.new,
+      href: newLeadsHref,
+      hrefLabel: "Ver os leads novos na lista de leads",
+    },
+    {
+      key: "returning",
+      label: "Voltaram por anúncio",
+      value: optionalCount(campaign.returningLeads),
+      caption: "Já eram leads antes do período",
+      hint: overviewLeadsHints.returning,
+      href: overviewLeadsHref(filters, leadsPeriod, "returning"),
+      hrefLabel: "Ver quem voltou por anúncio na lista de leads",
+    },
+    {
+      key: "repeat",
+      label: "Conversaram mais de uma vez",
+      value: optionalCount(campaign.repeatConversationLeads),
+      caption: "2 ou mais conversas no período",
+      hint: overviewLeadsHints.repeat,
+      href: overviewLeadsHref(filters, leadsPeriod, "repeat"),
+      hrefLabel: "Ver quem conversou mais de uma vez na lista de leads",
+    },
+    {
+      key: "conversations",
+      label: "Conversas por anúncio",
+      value: optionalCount(campaign.adConversationEvents),
+      caption: "Inclui conversas repetidas",
+      hint: overviewLeadsHints.conversations,
+    },
+  ];
   const funnelSummary = dataAvailable
     ? `${report.rangeLabel}: ${campaign.metaConversationsStarted} conversas registradas pela Meta chegaram a ${campaign.firstPurchases} ${campaign.firstPurchases === 1 ? "primeira compra" : "primeiras compras"}.`
     : "A jornada sera exibida quando a API concluir a inicializacao.";
@@ -403,7 +537,7 @@ export default async function OverviewPage({
           <span className="eyebrow">Visao geral</span>
           <h1>Cockpit da operacao</h1>
           <p>
-            {report.rangeLabel} cruzando investimento, conversas reais e eventos
+            {report.rangeLabel} cruzando investimento, leads novos e eventos
             enviados ao Pixel.
           </p>
         </div>
@@ -425,7 +559,8 @@ export default async function OverviewPage({
       </header>
 
       <OverviewFilters
-        adAccountId={filters.adAccountId}
+        accountCurrencies={accountCurrencies}
+        adAccountIds={selectedAdAccountIds}
         businessId={filters.businessId}
         hasActiveFilter={Object.values(filters).some(Boolean)}
         reportingAccounts={reportingAccounts}
@@ -436,13 +571,21 @@ export default async function OverviewPage({
       <div className="metric-grid overview-primary-metrics">
         <Metric
           label="Investimento"
-          value={dataAvailable ? money(campaign.spendCents) : "-"}
+          value={
+            !dataAvailable
+              ? "-"
+              : mixedCurrency
+                ? "Por moeda"
+                : fmt(campaign.spendCents)
+          }
           delta={
             !dataAvailable
               ? "Aguardando resposta da API"
-              : reportState === "empty"
-                ? "Nenhuma campanha sincronizada"
-                : report.rangeLabel
+              : mixedCurrency
+                ? "Veja os totais por moeda abaixo"
+                : reportState === "empty"
+                  ? "Nenhuma campanha sincronizada"
+                  : report.rangeLabel
           }
           unavailable={!dataAvailable}
         />
@@ -457,24 +600,35 @@ export default async function OverviewPage({
           unavailable={!dataAvailable}
         />
         <Metric
-          label="Conversas reais"
+          label="Leads novos"
+          title={overviewLeadsHints.new}
           value={dataAvailable ? String(campaign.realConversations) : "-"}
+          href={dataAvailable ? newLeadsHref : null}
+          hrefLabel="Ver os leads novos na lista de leads"
           delta={
-            !dataAvailable
-              ? "Aguardando resposta da API"
-              : trackedRate === null
-                ? "Aguardando conversas"
-                : `${trackedRate}% rastreadas`
+            dataAvailable
+              ? "1º contato no período"
+              : "Aguardando resposta da API"
           }
           unavailable={!dataAvailable}
         />
         <Metric
           label="Receita trafego"
-          value={dataAvailable ? money(campaign.trafficRevenueCents) : "-"}
+          value={
+            !dataAvailable
+              ? "-"
+              : mixedCurrency
+                ? "Por moeda"
+                : fmt(campaign.trafficRevenueCents)
+          }
           delta={
-            dataAvailable
-              ? `ROAS ${ratioLabel(campaign.roasAcquisition)}`
-              : "Aguardando resposta da API"
+            !dataAvailable
+              ? "Aguardando resposta da API"
+              : mixedCurrency
+                ? "ROAS em cada moeda, abaixo"
+                : rateGap.exchangeRateMissing
+                  ? `ROAS ${exchangeRateMissingLabel}`
+                  : `ROAS ${ratioLabel(campaign.roasAcquisition)}`
           }
           unavailable={!dataAvailable}
         />
@@ -507,12 +661,32 @@ export default async function OverviewPage({
         />
       </div>
 
+      {dataAvailable && mixedCurrency ? (
+        <CurrencyKpiGroups groups={currencyGroups.map(currencyKpiGroup)} />
+      ) : null}
+
+      {dataAvailable && rateGap.exchangeRateMissing ? (
+        <ExchangeRateMissingNote
+          unconvertedRevenue={rateGap.unconvertedRevenue}
+        />
+      ) : null}
+
+      <OverviewLeadsBlock
+        available={dataAvailable}
+        items={leadsBlockItems}
+        rangeLabel={report.rangeLabel}
+      />
+
       <section
         className="surface-panel overview-funnel-panel"
         aria-label="Funil integrado"
       >
         {dataAvailable ? (
-          <ConversionFunnel description={funnelSummary} stages={funnelStages} />
+          <ConversionFunnel
+            description={funnelSummary}
+            stageCost={stageCostLabel}
+            stages={funnelStages}
+          />
         ) : (
           <>
             <div className="overview-section-heading">
@@ -567,12 +741,17 @@ function DailyConversationComparison({
     (total, point) => total + point.realConversations,
     0,
   );
+  const returningTotal = points.reduce(
+    (total, point) => total + (point.returningLeads ?? 0),
+    0,
+  );
   const difference = metaTotal - realTotal;
   const maximum = Math.max(
     1,
     ...points.flatMap((point) => [
       point.metaConversationsStarted,
       point.realConversations,
+      point.returningLeads ?? 0,
     ]),
   );
   const viewWidth = Math.max(760, points.length * 54 + 92);
@@ -584,7 +763,8 @@ function DailyConversationComparison({
   const plotRight = viewWidth - 24;
   const plotWidth = plotRight - plotLeft;
   const groupWidth = plotWidth / Math.max(points.length, 1);
-  const barWidth = Math.min(15, Math.max(6, groupWidth * 0.28));
+  const barWidth = Math.min(13, Math.max(5, groupWidth * 0.22));
+  const barGap = 2;
   const labelEvery = Math.max(1, Math.ceil(points.length / 10));
   const barHeight = (value: number) => (value / maximum) * plotHeight;
   const formatDate = (date: string) => {
@@ -596,7 +776,7 @@ function DailyConversationComparison({
       ? "Volumes conciliados no periodo"
       : difference > 0
         ? `${difference} ${difference === 1 ? "conversa" : "conversas"} a mais na Meta`
-        : `${Math.abs(difference)} ${Math.abs(difference) === 1 ? "conversa real" : "conversas reais"} a mais`;
+        : `${Math.abs(difference)} ${Math.abs(difference) === 1 ? "lead novo" : "leads novos"} a mais`;
 
   return (
     <section
@@ -606,10 +786,11 @@ function DailyConversationComparison({
       <div className="daily-comparison-header">
         <div>
           <span className="eyebrow">Conciliacao diaria</span>
-          <h2 id="daily-comparison-title">Meta x conversas reais</h2>
+          <h2 id="daily-comparison-title">Meta x leads novos</h2>
           <p>
-            Compare os volumes dia a dia e localize rapidamente onde surgiu a
-            divergencia.
+            A Meta conta cada conversa iniciada. Leads novos contam uma vez, no
+            dia do primeiro contato; retornos são leads antigos que voltaram por
+            anúncio naquele dia (quem volta em dois dias conta nos dois).
           </p>
         </div>
         <div
@@ -645,11 +826,15 @@ function DailyConversationComparison({
           <div className="daily-comparison-legend" aria-label="Legenda">
             <span>
               <i className="meta" aria-hidden="true" />
-              Meta <strong>{metaTotal}</strong>
+              Conversas contadas pela Meta <strong>{metaTotal}</strong>
             </span>
             <span>
               <i className="real" aria-hidden="true" />
-              Conversas reais <strong>{realTotal}</strong>
+              Leads novos <strong>{realTotal}</strong>
+            </span>
+            <span title="Soma dos dias: quem volta em dois dias conta nos dois.">
+              <i className="returning" aria-hidden="true" />
+              Retornos (por dia) <strong>{returningTotal}</strong>
             </span>
           </div>
           <div className="daily-comparison-scroll">
@@ -658,9 +843,11 @@ function DailyConversationComparison({
               viewBox={`0 0 ${viewWidth} ${viewHeight}`}
               style={{ minWidth: `${viewWidth}px` }}
               role="img"
-              aria-label={`Comparacao diaria. Meta ${metaTotal}, conversas reais ${realTotal}.`}
+              aria-label={`Comparacao diaria. Conversas contadas pela Meta ${metaTotal}, leads novos ${realTotal}, retornos ${returningTotal}.`}
             >
-              <title>Conversas da Meta e conversas reais por dia</title>
+              <title>
+                Conversas contadas pela Meta, leads novos e retornos por dia
+              </title>
               {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
                 const y = plotBottom - ratio * plotHeight;
                 const value = Math.round(maximum * ratio);
@@ -678,6 +865,9 @@ function DailyConversationComparison({
                 const center = plotLeft + groupWidth * index + groupWidth / 2;
                 const metaHeight = barHeight(point.metaConversationsStarted);
                 const realHeight = barHeight(point.realConversations);
+                const returning = point.returningLeads ?? 0;
+                const returningHeight = barHeight(returning);
+                const groupStart = center - (barWidth * 3 + barGap * 2) / 2;
                 const showLabel =
                   index % labelEvery === 0 || index === points.length - 1;
 
@@ -685,23 +875,33 @@ function DailyConversationComparison({
                   <g key={point.date}>
                     <rect
                       className="daily-bar meta"
-                      x={center - barWidth - 2}
+                      x={groupStart}
                       y={plotBottom - metaHeight}
                       width={barWidth}
                       height={metaHeight}
                       rx="3"
                     >
-                      <title>{`${formatDate(point.date)} - Meta: ${point.metaConversationsStarted}`}</title>
+                      <title>{`${formatDate(point.date)} - Conversas contadas pela Meta: ${point.metaConversationsStarted}`}</title>
                     </rect>
                     <rect
                       className="daily-bar real"
-                      x={center + 2}
+                      x={groupStart + barWidth + barGap}
                       y={plotBottom - realHeight}
                       width={barWidth}
                       height={realHeight}
                       rx="3"
                     >
-                      <title>{`${formatDate(point.date)} - Reais: ${point.realConversations}`}</title>
+                      <title>{`${formatDate(point.date)} - Leads novos: ${point.realConversations}`}</title>
+                    </rect>
+                    <rect
+                      className="daily-bar returning"
+                      x={groupStart + (barWidth + barGap) * 2}
+                      y={plotBottom - returningHeight}
+                      width={barWidth}
+                      height={returningHeight}
+                      rx="3"
+                    >
+                      <title>{`${formatDate(point.date)} - Retornos: ${returning}`}</title>
                     </rect>
                     {showLabel ? (
                       <text
@@ -728,17 +928,40 @@ function Metric({
   label,
   value,
   delta,
+  href = null,
+  hrefLabel,
+  title,
   unavailable = false,
 }: {
   label: string;
   value: string;
-  delta: string;
+  delta: ReactNode;
+  /** The exact list behind the number (Leads page), when one exists. */
+  href?: string | null;
+  hrefLabel?: string;
+  /** Plain-language explanation shown on hover. */
+  title?: string;
   unavailable?: boolean;
 }) {
   return (
-    <div className={`metric-card${unavailable ? " unavailable" : ""}`}>
+    <div
+      className={`metric-card${unavailable ? " unavailable" : ""}`}
+      title={title}
+    >
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong>
+        {href ? (
+          <Link
+            className="kpi-number-link"
+            href={href}
+            aria-label={hrefLabel ? `${value} - ${hrefLabel}` : undefined}
+          >
+            {value}
+          </Link>
+        ) : (
+          value
+        )}
+      </strong>
       <small>{delta}</small>
     </div>
   );
@@ -746,9 +969,12 @@ function Metric({
 
 function ConversionFunnel({
   description,
+  stageCost,
   stages,
 }: {
   description: string;
+  /** Custo da etapa já formatado, na moeda (ou moedas) do recorte. */
+  stageCost: (stage: ReportFunnelStepDto) => string;
   stages: ReportFunnelStepDto[];
 }) {
   const palette = [
@@ -855,7 +1081,7 @@ function ConversionFunnel({
               </small>
               <div className="conversion-funnel-stage-cost">
                 <span>{funnelStageCostLabel(stage)}</span>
-                <strong>{money(stage.costCents ?? null)}</strong>
+                <strong>{stageCost(stage)}</strong>
               </div>
             </div>
           );
@@ -907,7 +1133,7 @@ function ConversionFunnel({
               </small>
               <div className="conversion-funnel-mobile-cost">
                 <span>{funnelStageCostLabel(stage)}</span>
-                <strong>{money(stage.costCents ?? null)}</strong>
+                <strong>{stageCost(stage)}</strong>
               </div>
               <span
                 className="conversion-funnel-mobile-band"

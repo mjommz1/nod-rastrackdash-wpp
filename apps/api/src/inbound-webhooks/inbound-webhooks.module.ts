@@ -13,6 +13,8 @@ import { InboundWebhookChannelRoutesService } from "./inbound-webhook-channel-ro
 import { InboundConversionAutomationIngestionService } from "./inbound-conversion-automation-ingestion.service";
 import { InboundWebhookConnectionsController } from "./inbound-webhook-connections.controller";
 import { InboundWebhookConnectionsService } from "./inbound-webhook-connections.service";
+import { IntegrationEndpointsController } from "./integration-endpoints.controller";
+import { IntegrationEndpointsService } from "./integration-endpoints.service";
 import { InboundWebhookDiagnosticsService } from "./inbound-webhook-diagnostics.service";
 import { InboundWebhookIngestionService } from "./inbound-webhook-ingestion.service";
 import { InboundWebhookMaintenanceService } from "./inbound-webhook-maintenance.service";
@@ -50,6 +52,7 @@ import { WhatsappProvidersModule } from "../integrations/whatsapp-providers/what
   controllers: [
     InboundWebhookConnectionsController,
     InboundWebhookPublicController,
+    IntegrationEndpointsController,
   ],
   providers: [
     InboundConversionAutomationIngestionService,
@@ -67,6 +70,7 @@ import { WhatsappProvidersModule } from "../integrations/whatsapp-providers/what
     InboundWebhookProcessor,
     InboundWebhookQueueService,
     InboundWebhookParserRegistry,
+    IntegrationEndpointsService,
     UazapiConversionBridgeService,
     UazapiProviderConversionService,
     MetaTokenEncryptionService,

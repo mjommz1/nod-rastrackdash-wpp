@@ -141,7 +141,7 @@ describe("purchase review panel", () => {
     const html = renderPanel(true);
 
     expect(html).toContain("Regra de valor medio");
-    expect(html).toContain("R$\u00a0299,90");
+    expect(html).toContain("R$ 299,90");
     expect(html).toContain("Aprovar e enviar");
     expect(html).not.toContain("Complete os produtos antes de aprovar");
   });

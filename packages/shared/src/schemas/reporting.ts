@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { currencyCodeSchema, unconvertedRevenueSchema } from "../currency";
 import { conversionEventLogStatusSchema } from "./conversion-events";
 
 const moneyCentsSchema = z.number().int().nonnegative();
@@ -76,6 +77,16 @@ export const campaignReportRowSchema = z.object({
   businessName: z.string().min(1).nullable().optional(),
   adAccountId: z.string().min(1).nullable().optional(),
   adAccountName: z.string().min(1).nullable().optional(),
+  /**
+   * Moeda dos valores em dinheiro da linha: a moeda do gasto da conta de
+   * anúncio (correção manual -> moeda da Meta -> BRL). A receita de vendas em
+   * outra moeda vem convertida pela PTAX do dia da venda, quando há cotação.
+   */
+  currency: currencyCodeSchema.optional(),
+  /** true quando alguma venda da linha ficou sem cotação (fora da receita). */
+  exchangeRateMissing: z.boolean().optional(),
+  /** Receita fora da linha por falta de cotação, na moeda original. */
+  unconvertedRevenue: z.array(unconvertedRevenueSchema).optional(),
   whatsappClassification: metaWhatsappClassificationSchema.optional(),
   configuredStatus: z.string().min(1).nullable().optional(),
   effectiveStatus: z.string().min(1).nullable().optional(),
@@ -83,8 +94,25 @@ export const campaignReportRowSchema = z.object({
   spendCents: moneyCentsSchema,
   metaConversationsStarted: nonnegativeIntSchema,
   costPerMetaConversationCents: moneyCentsSchema.nullable(),
+  /**
+   * Leads novos (paid): people whose FIRST contact ever falls in the period,
+   * counted once, attributed to the ad of that first contact. CPL and the
+   * LeadSubmitted funnel stage use this number.
+   */
   realConversations: nonnegativeIntSchema,
   costPerRealConversationCents: moneyCentsSchema.nullable(),
+  /**
+   * People whose first contact was before the period and who started a new
+   * paid conversation in it ("voltaram por anuncio"). Never part of CPL.
+   */
+  returningLeads: nonnegativeIntSchema.optional(),
+  /** Paid LeadSubmitted events in the period (one per CTWA conversation sent to Meta). */
+  adConversationEvents: nonnegativeIntSchema.optional(),
+  /**
+   * People with two or more paid conversations (LeadSubmitted) in the period,
+   * leads novos included ("conversaram mais de uma vez"). Never part of CPL.
+   */
+  repeatConversationLeads: nonnegativeIntSchema.optional(),
   organicLeads: nonnegativeIntSchema,
   totalReceived: nonnegativeIntSchema,
   trackingRate: nonnegativeRateSchema.nullable(),
@@ -120,10 +148,48 @@ export const reportTotalsSchema = campaignReportRowSchema.omit({
   budget: true,
 });
 
+/**
+ * Totais de UMA moeda (moedas diferentes nunca são somadas): mesmo formato de
+ * `totals`, com a moeda obrigatória. Gasto e custos (CPL, custo por conversa,
+ * custo por compra) estão na moeda das contas do grupo; a receita atribuída a
+ * anúncios foi convertida para ela pela PTAX do dia da venda; receita sem
+ * anúncio entra no grupo da própria moeda.
+ */
+export const reportCurrencyGroupSchema = reportTotalsSchema.extend({
+  currency: currencyCodeSchema,
+  /** Contas de anúncio (ids da Meta) cujo gasto está neste grupo. */
+  adAccountIds: z.array(z.string().min(1)),
+  /** true quando alguma venda do grupo ficou sem cotação. */
+  exchangeRateMissing: z.boolean(),
+  /** Receita fora do grupo por falta de cotação, na moeda original. */
+  unconvertedRevenue: z.array(unconvertedRevenueSchema),
+});
+
+/**
+ * Moeda nas respostas de relatório:
+ * - `currency`: moeda única de todos os valores (linhas, `totals`, `summary`),
+ *   ou null quando o período teve movimento em mais de uma moeda.
+ * - `byCurrency`: só quando `currency` é null; um grupo por moeda com gasto
+ *   ou receita no período, nunca um grupo zerado. Com `currency` null, os
+ *   valores em dinheiro de `totals`/`summary` misturam moedas: use os grupos.
+ * - `exchangeRateMissing` e `unconvertedRevenue`: só quando alguma venda
+ *   ficou sem cotação (PTAX desligada, BCB fora ou dia sem boletim).
+ * Workspace todo em BRL recebe só `currency: "BRL"`; o resto não muda.
+ */
+const reportCurrencyFields = {
+  currency: currencyCodeSchema.nullable().optional(),
+  byCurrency: z.array(reportCurrencyGroupSchema).optional(),
+  exchangeRateMissing: z.boolean().optional(),
+  unconvertedRevenue: z.array(unconvertedRevenueSchema).optional(),
+};
+
 export const reportDailyComparisonPointSchema = z.object({
   date: reportDateSchema,
   metaConversationsStarted: nonnegativeIntSchema,
+  /** Leads novos whose first contact was on this day. */
   realConversations: nonnegativeIntSchema,
+  /** Leads antigos que voltaram por anuncio neste dia. */
+  returningLeads: nonnegativeIntSchema.optional(),
 });
 
 export const reportOverviewSchema = z.object({
@@ -134,6 +200,9 @@ export const reportOverviewSchema = z.object({
   campaigns: z.array(campaignReportRowSchema),
   summary: campaignReportRowSchema.optional(),
   totals: reportTotalsSchema.optional(),
+  ...reportCurrencyFields,
+  /** Igual a `byCurrency`, para `summary` (Visão Geral, includeSummary). */
+  summaryByCurrency: z.array(reportCurrencyGroupSchema).optional(),
   dailyComparison: z.array(reportDailyComparisonPointSchema).optional(),
   dailyComparisonAvailable: z.boolean().optional(),
   pagination: reportPaginationSchema.optional(),
@@ -165,6 +234,7 @@ export const adSetReportOverviewSchema = z.object({
   until: reportDateSchema.nullable().optional(),
   adSets: z.array(adSetReportRowSchema),
   totals: reportTotalsSchema.optional(),
+  ...reportCurrencyFields,
   pagination: reportPaginationSchema.optional(),
 });
 
@@ -189,6 +259,7 @@ export const adReportOverviewSchema = z.object({
   until: reportDateSchema.nullable().optional(),
   ads: z.array(adReportRowSchema),
   totals: reportTotalsSchema.optional(),
+  ...reportCurrencyFields,
   pagination: reportPaginationSchema.optional(),
 });
 
@@ -317,9 +388,31 @@ export const conversionAuditOverviewSchema = z.object({
   events: z.array(conversionAuditEventSchema),
 });
 
+// Server-side report ordering is limited to existing canonical row metrics.
+// CPL is costPerRealConversationCents; CPM is not exposed by report rows.
+export const reportSortKeySchema = z.enum([
+  "realConversations",
+  "qualifiedLead",
+  "purchases",
+  "costPerRealConversationCents",
+  "costPerQualifiedLeadCents",
+  "costPerPurchaseCents",
+]);
+
+export const reportSortDirectionSchema = z.enum(["desc", "asc"]);
+
+export const reportSortSchema = z
+  .object({
+    key: reportSortKeySchema,
+    direction: reportSortDirectionSchema.default("desc"),
+  })
+  .strict();
+
 export const reportFiltersSchema = z.object({
   businessId: z.string().min(1).optional(),
   adAccountId: z.string().min(1).optional(),
+  /** Várias contas de anúncio (query `adAccountIds=a,b` ou repetida). */
+  adAccountIds: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
   delivery: z.enum(["all", "had_delivery"]).default("all"),
   selectedEntityIds: z
     .array(z.string().trim().min(1).max(200))
@@ -335,6 +428,7 @@ export const reportFiltersSchema = z.object({
 
 export type CampaignReportRowDto = z.infer<typeof campaignReportRowSchema>;
 export type ReportTotalsDto = z.infer<typeof reportTotalsSchema>;
+export type ReportCurrencyGroupDto = z.infer<typeof reportCurrencyGroupSchema>;
 export type ReportDailyComparisonPointDto = z.infer<
   typeof reportDailyComparisonPointSchema
 >;
@@ -389,3 +483,6 @@ export type MetaWhatsappOverrideInputDto = z.infer<
   typeof metaWhatsappOverrideInputSchema
 >;
 export type ReportFiltersDto = z.infer<typeof reportFiltersSchema>;
+export type ReportSortKeyDto = z.infer<typeof reportSortKeySchema>;
+export type ReportSortDirectionDto = z.infer<typeof reportSortDirectionSchema>;
+export type ReportSortDto = z.infer<typeof reportSortSchema>;

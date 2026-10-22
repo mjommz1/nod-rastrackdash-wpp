@@ -57,9 +57,10 @@ export function TemplateVersionStatus({
         <strong>Não foi possível verificar atualizações</strong>
         {version.reason === "missing_deployed_sha" ? (
           <span>
-            Esta instância não informa o commit instalado (build arg{" "}
-            <code>GIT_SHA</code>), então não dá para comparar com a versão mais
-            recente. Isso não significa que ela esteja atualizada.
+            O build desta instância não conseguiu confirmar o commit instalado
+            (código-fonte sem metadados Git ou com alterações locais), então não
+            dá para comparar com a versão mais recente. Isso não significa que
+            ela esteja atualizada.
           </span>
         ) : (
           <span>

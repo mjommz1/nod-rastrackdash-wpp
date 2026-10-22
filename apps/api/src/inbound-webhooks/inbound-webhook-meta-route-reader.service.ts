@@ -1,5 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
+import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../common/prisma/prisma.service";
+import { authorizedInboundMetaDestinationIds } from "./inbound-webhook-meta-route-eligibility";
 
 export type InboundWebhookMetaRouteReason =
   | "route_resolved"
@@ -32,7 +34,13 @@ export type InboundWebhookMetaRoutePreview = {
 export class InboundWebhookMetaRouteReaderService {
   constructor(
     @Inject(PrismaService)
-    private readonly prisma: PrismaService,
+    private readonly prisma: Pick<
+      Prisma.TransactionClient,
+      | "metaAd"
+      | "metaReportingAccount"
+      | "metaBusinessConnection"
+      | "metaConversionDestination"
+    >,
   ) {}
 
   async previewRoute(input: {
@@ -88,7 +96,7 @@ export class InboundWebhookMetaRouteReaderService {
         conversionDestinationId: true,
         active: true,
         allowedDestinations: {
-          where: { active: true },
+          where: { workspaceId: input.workspaceId, active: true },
           select: {
             conversionDestinationId: true,
           },
@@ -135,7 +143,6 @@ export class InboundWebhookMetaRouteReaderService {
       select: {
         id: true,
         status: true,
-        defaultConversionDestinationId: true,
         credential: { select: { status: true } },
       },
     });
@@ -160,21 +167,8 @@ export class InboundWebhookMetaRouteReaderService {
       return this.unresolved("credential_inactive", connectionMetadata);
     }
 
-    const legacyDestinationId =
-      account.conversionDestinationId ??
-      connection.defaultConversionDestinationId;
-    const allowedDestinations = account.allowedDestinations ?? [];
-    const authorizedDestinationIds = [
-      ...new Set(
-        allowedDestinations.length > 0
-          ? allowedDestinations.map(
-              (destination) => destination.conversionDestinationId,
-            )
-          : legacyDestinationId
-            ? [legacyDestinationId]
-            : [],
-      ),
-    ];
+    const authorizedDestinationIds =
+      authorizedInboundMetaDestinationIds(account);
     const assignment =
       ad.destinationAssignment?.reportingAccountId === account.id
         ? ad.destinationAssignment

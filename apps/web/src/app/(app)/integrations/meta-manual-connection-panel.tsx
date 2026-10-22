@@ -13,9 +13,11 @@ import {
   ChevronDown,
   CircleCheck,
   Database,
+  ExternalLink,
   History,
   KeyRound,
   Link2,
+  LogIn,
   Pause,
   Pencil,
   Play,
@@ -32,7 +34,10 @@ import type { FormEvent } from "react";
 import { useRef, useState } from "react";
 import { SearchableSelect } from "../../../components/searchable-select";
 import { PresentationMask } from "../../../components/presentation-mask";
-import type { MetaManualActionResult } from "./meta-manual-actions";
+import type {
+  MetaManualActionResult,
+  MetaPalmupPairing,
+} from "./meta-manual-actions";
 
 type SetupMode = "quick" | "advanced";
 type DestinationMode = "discovered" | "direct" | "existing";
@@ -194,6 +199,12 @@ type MetaManualConnectionPanelProps = {
     conversionDestinationId: string | null,
   ) => Promise<MetaManualActionResult>;
   setOAuthRoutingAction: (enabled: boolean) => Promise<MetaManualActionResult>;
+  // The API only accepts the PalmUP social login from workspace owners.
+  canConnectPalmup?: boolean;
+  startPalmupConnectAction?: () => Promise<MetaManualActionResult>;
+  completePalmupConnectAction?: (
+    pairingId: string,
+  ) => Promise<MetaManualActionResult>;
 };
 
 type LegacyOAuthMigrationCardProps = {
@@ -384,6 +395,9 @@ export function MetaManualConnectionPanel({
   loadAdRoutingAction,
   setAdDestinationAction,
   setOAuthRoutingAction,
+  canConnectPalmup = false,
+  startPalmupConnectAction,
+  completePalmupConnectAction,
 }: MetaManualConnectionPanelProps) {
   const [configuration, setConfiguration] = useState(initialConfiguration);
   const [setupOpen, setSetupOpen] = useState(false);
@@ -408,6 +422,9 @@ export function MetaManualConnectionPanel({
     tone: "success" | "error";
     message: string;
   } | null>(null);
+  const [palmupPairing, setPalmupPairing] =
+    useState<MetaPalmupPairing | null>(null);
+  const [palmupUnconfigured, setPalmupUnconfigured] = useState(false);
   const [rotatingCredentialId, setRotatingCredentialId] = useState<
     string | null
   >(null);
@@ -487,6 +504,14 @@ export function MetaManualConnectionPanel({
     configuration?.reportingAccounts.filter((account) => account.active)
       .length ?? 0;
   const configuredDestinationCount = configuration?.destinations.length ?? 0;
+  const palmupVisible = Boolean(
+    canConnectPalmup &&
+    canManage &&
+    !oauthMode &&
+    startPalmupConnectAction &&
+    completePalmupConnectAction,
+  );
+  const palmupReady = palmupVisible && !palmupUnconfigured;
 
   if (!capabilities.manualEnabled && !oauthMode) {
     return null;
@@ -525,6 +550,47 @@ export function MetaManualConnectionPanel({
 
     showResult(result);
     setPendingAction(null);
+  }
+
+  async function handlePalmupStart() {
+    if (!startPalmupConnectAction) {
+      return;
+    }
+
+    setPendingAction("palmup");
+    setNotice(null);
+    const result = await startPalmupConnectAction();
+    setPalmupPairing(result.ok ? (result.palmupPairing ?? null) : null);
+    setPalmupUnconfigured(Boolean(result.palmupUnconfigured));
+    showResult(result);
+    setPendingAction(null);
+  }
+
+  async function handlePalmupComplete() {
+    if (!completePalmupConnectAction || !palmupPairing) {
+      return;
+    }
+
+    setPendingAction("palmup");
+    setNotice(null);
+    const result = await completePalmupConnectAction(palmupPairing.pairingId);
+    // The API consumes the pairing on every attempt; a retry needs a new start.
+    setPalmupPairing(null);
+
+    if (result.ok && result.discovery) {
+      applyDiscovery(result.discovery);
+      setBusinessLookupId("");
+      setDirectAccountIds("");
+      await refreshConfigurationFromServerState(result);
+    }
+
+    showResult(result);
+    setPendingAction(null);
+  }
+
+  function startPalmupConnection() {
+    startNewConnection();
+    void handlePalmupStart();
   }
 
   async function handleCredentialSelection(nextCredentialId: string) {
@@ -1046,9 +1112,92 @@ export function MetaManualConnectionPanel({
 
   function startNewConnection() {
     resetSetup();
+    setPalmupPairing(null);
     setSetupOpen(true);
     setSetupMode("quick");
     setNotice(null);
+  }
+
+  function renderPalmupConnect() {
+    if (!palmupVisible) {
+      return null;
+    }
+
+    if (!palmupReady) {
+      return (
+        <div className="meta-palmup-connect">
+          <button className="button" type="button" disabled>
+            <LogIn size={16} aria-hidden="true" />
+            Conectar Meta (PalmUP)
+          </button>
+          <p className="action-note">
+            Login social PalmUP nao configurado neste servidor. Defina
+            PALMUP_META_BROKER_URL na API ou use o token permanente abaixo.
+          </p>
+        </div>
+      );
+    }
+
+    if (palmupPairing) {
+      return (
+        <div className="meta-palmup-connect">
+          <div className="meta-palmup-connect-actions">
+            <a
+              className="button"
+              href={palmupPairing.authorizeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink size={16} aria-hidden="true" />
+              Abrir login da Meta
+            </a>
+            <button
+              className="button secondary"
+              type="button"
+              disabled={pendingAction !== null}
+              onClick={() => void handlePalmupComplete()}
+            >
+              <ShieldCheck size={16} aria-hidden="true" />
+              {pendingAction === "palmup"
+                ? "Concluindo..."
+                : "Ja autorizei, concluir"}
+            </button>
+            <button
+              className="button ghost"
+              type="button"
+              disabled={pendingAction !== null}
+              onClick={() => setPalmupPairing(null)}
+            >
+              Cancelar
+            </button>
+          </div>
+          <p className="action-note">
+            Autorize na aba da PalmUP e volte aqui. O pedido expira em cerca de
+            10 minutos e o token fica protegido na API, sem aparecer nesta tela.
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="meta-palmup-connect">
+        <button
+          className="button"
+          type="button"
+          disabled={pendingAction !== null}
+          onClick={() => void handlePalmupStart()}
+        >
+          <LogIn size={16} aria-hidden="true" />
+          {pendingAction === "palmup"
+            ? "Preparando..."
+            : "Conectar Meta (PalmUP)"}
+        </button>
+        <p className="action-note">
+          Entre com o Facebook pelo app da PalmUP, sem criar um app Meta
+          proprio. Prefere token permanente? Cole abaixo.
+        </p>
+      </div>
+    );
   }
 
   function renderConfiguredConnections(showNewConnection: boolean) {
@@ -1078,6 +1227,16 @@ export function MetaManualConnectionPanel({
                   {pendingAction === "history"
                     ? "Enfileirando..."
                     : "Importar historico inicial"}
+                </button>
+              ) : null}
+              {palmupReady ? (
+                <button
+                  className="button secondary"
+                  type="button"
+                  disabled={pendingAction !== null}
+                  onClick={startPalmupConnection}
+                >
+                  <LogIn size={16} /> Conectar Meta (PalmUP)
                 </button>
               ) : null}
               <button
@@ -2144,7 +2303,9 @@ export function MetaManualConnectionPanel({
             <span className="muted">
               {oauthMode
                 ? "Associe cada BM e suas contas ao destino de conversao correto."
-                : "Para estruturas operadas por token de usuario do sistema."}
+                : palmupReady
+                  ? "Entre com o Facebook pela PalmUP ou cole o token de usuario do sistema."
+                  : "Para estruturas operadas por token de usuario do sistema."}
             </span>
           </span>
           <span className="meta-manual-entry-action">
@@ -2277,6 +2438,8 @@ export function MetaManualConnectionPanel({
                         : "Usar autorizacao OAuth"}
                   </button>
                 ) : (
+                  <>
+                  {renderPalmupConnect()}
                   <form
                     ref={credentialFormRef}
                     className="meta-token-form"
@@ -2317,6 +2480,7 @@ export function MetaManualConnectionPanel({
                         : "Validar e proteger"}
                     </button>
                   </form>
+                  </>
                 )}
                 <p className="action-note">
                   {oauthMode

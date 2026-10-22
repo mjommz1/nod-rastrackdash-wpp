@@ -1,3 +1,4 @@
+import { inboundParserProductionEligible } from "./inbound-webhook-parser-eligibility";
 import { Inject, Injectable } from "@nestjs/common";
 import { PrismaService } from "../common/prisma/prisma.service";
 import { RUNTIME_ENV, type RuntimeEnv } from "../common/runtime/runtime.module";
@@ -58,7 +59,17 @@ export class InboundWebhookProductionIntakeService {
         deliveryId: input.deliveryId,
         classification: "eligible_route_resolved",
         hasCtwa: true,
-        adId: { not: null },
+        // Fase 4b: an Unnichat CTWA entry without ad id is materialized only
+        // through the number's unique authorized page/pixel destination
+        // (ctwa_clid stays mandatory; the worker re-checks everything).
+        OR: [
+          { adId: { not: null } },
+          {
+            provider: "unnichat",
+            adId: null,
+            classificationReason: "authorized_ctwa_destination",
+          },
+        ],
         replayItem: null,
         productionItem: null,
       },
@@ -72,12 +83,13 @@ export class InboundWebhookProductionIntakeService {
         },
         connection: {
           select: {
+            provider: true,
             status: true,
             removedAt: true,
             productionActivatedAt: true,
             parserRelease: {
               select: {
-                status: true,
+                status: true, provider: true, version: true,
               },
             },
           },
@@ -181,17 +193,40 @@ export class InboundWebhookProductionIntakeService {
       await this.prisma.providerConversionRuleExecution.findMany({
         where: {
           status: "eligible",
-          providerRule: {
-            mode: "production",
-            removedAt: null,
-            productionActivatedAt: { not: null },
-            conversionRule: { active: true },
-            parserRelease: { status: "certified" },
-            connection: {
-              status: "production",
-              removedAt: null,
+          OR: [
+            {
+              providerRule: {
+                mode: "production",
+                removedAt: null,
+                productionActivatedAt: { not: null },
+                conversionRule: { active: true },
+                parserRelease: { OR: [{ status: "certified" }, { provider: "meta_cloud", version: "v1", status: "observation_only" }] },
+                connection: {
+                  status: "production",
+                  removedAt: null,
+                },
+              },
             },
-          },
+            {
+              // A rule spanning connections (no binding, Fase 3) is gated by
+              // the connection that delivered the occurrence. The production
+              // worker re-checks the full context before sending.
+              providerRule: {
+                connectionId: null,
+                mode: "production",
+                removedAt: null,
+                productionActivatedAt: { not: null },
+                conversionRule: { active: true },
+              },
+              sourceDelivery: {
+                connection: {
+                  status: "production",
+                  removedAt: null,
+                  parserRelease: { OR: [{ status: "certified" }, { provider: "meta_cloud", version: "v1", status: "observation_only" }] },
+                },
+              },
+            },
+          ],
         },
         select: {
           id: true,
@@ -246,10 +281,11 @@ export class InboundWebhookProductionIntakeService {
   private isAfterActivationBoundary(event: {
     delivery: { firstReceivedAt: Date };
     connection: {
+      provider: string;
       status: string;
       removedAt: Date | null;
       productionActivatedAt: Date | null;
-      parserRelease: { status: string };
+      parserRelease: { status: string; provider: string; version: string };
     };
     channel: {
       status: string;
@@ -262,7 +298,9 @@ export class InboundWebhookProductionIntakeService {
     return Boolean(
       event.connection.status === "production" &&
       event.connection.removedAt === null &&
-      event.connection.parserRelease.status === "certified" &&
+      event.connection.parserRelease.provider === event.connection.provider &&
+      inboundParserProductionEligible(event.connection.parserRelease) &&
+      (event.connection.provider !== "meta_cloud" || Boolean(this.env.META_APP_SECRET?.trim())) &&
       event.channel.status === "active" &&
       connectionActivatedAt &&
       channelActivatedAt &&

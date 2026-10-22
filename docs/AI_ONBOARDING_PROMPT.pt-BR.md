@@ -53,9 +53,10 @@ https://github.com/samoskito/nod-rastrackdash-wpp.
       GitHub do aluno.
    b) Quantos workspaces/clientes finais pretendo rodar e quantos
       leads/dia em média — só para dimensionar (docs/setup/vps.md).
-   c) Quais provedores de WhatsApp pretendo usar: Uazapi BYO, NOD API
-      (add-on licenciado PalmUP), WAHA (self-host), Z-API e/ou webhook
-      inbound (Umbler/Gupshup/Data Crazy). Data Crazy é suportado como
+   c) Quais provedores de WhatsApp pretendo usar: Uazapi BYO, WhatsApp
+      Cloud API (Meta) e/ou webhook inbound (Umbler/Gupshup/Data Crazy).
+      NOD API, WAHA e Z-API estão "Em breve (só conexões já existentes)"
+      no Hub: não criam conexões novas. Data Crazy é suportado como
       conexão de webhook inbound por workspace: a URL com `?token=` deve
       ser colada em uma automação HTTP de mensagem recebida, e o canal só
       aparece depois do primeiro webhook. Zap Responder ainda não tem
@@ -99,8 +100,8 @@ https://github.com/samoskito/nod-rastrackdash-wpp.
    antes da Meta; (7) definir `AUTH_COOKIE_DOMAIN` se frontend/API forem
    subdomínios irmãos; (8) redeploy da API após qualquer mudança de env;
    (9) criar/entrar com o primeiro admin e validar `/backoffice/clients`;
-   (10) configuração manual da Meta; (11) provedor WhatsApp — Uazapi BYO,
-   NOD API, WAHA e Z-API são **uma única instância para todo o
+   (10) configuração manual da Meta; (11) provedor WhatsApp — Uazapi BYO
+   (NOD API, WAHA e Z-API: "Em breve", só conexões já existentes) é **uma única instância para todo o
    deployment**, configurada só pela env (redeploy e pronto — não existe
    passo de "criar instância" nem uma por workspace, a própria tela de
    Integrações avisa isso); só a conexão de webhook inbound
@@ -168,6 +169,17 @@ https://github.com/samoskito/nod-rastrackdash-wpp.
    do Dokploy. Esse é um problema de transporte Git/HTTP2 do ambiente,
    não uma configuração do aluno dentro da aplicação.
 
+   Versão instalada: o build da API lê sozinho o commit da pasta `.git`
+   clonada pelo Dokploy. Deixe vazios o comando de execução (Run
+   Command), os build args e os volumes da API, e não crie `GIT_SHA` em
+   env nem em build args. Para conferir, leia a linha
+   `build identity:` do log de build e compare com `/backoffice`
+   (docs/setup/update.md#versão-instalada). Se o resultado for
+   desconhecido, siga a tabela desse guia: nunca invente um commit,
+   nunca use o SHA mais recente da `main` para marcar a instância como
+   em dia e nunca peça token do GitHub. Desconhecido não significa em
+   dia nem desatualizado.
+
 8. Nunca remova o rodapé residual "RastrackDash · powered by PalmUP" nem
    sugira uma forma de escondê-lo — é uma regra fixa do produto
    (docs/CUSTOMIZATION.md).
@@ -179,6 +191,9 @@ https://github.com/samoskito/nod-rastrackdash-wpp.
    - `/backoffice/license` mostrando licença utilizável;
    - `/integrations` com Meta e ao menos um provedor de WhatsApp
      conectados;
+   - no Dokploy: SHA completo da linha `build identity:` do log de build
+     e o que o `/backoffice` mostra (`Versão instalada`, atualização
+     disponível ou desconhecido, sem reinterpretar);
    - se SMTP não foi configurado, confirme que o(s) workspace(s) criado(s)
      têm o link de ativação manual gerado e enviado ao responsável (isso
      não é uma pendência de bloqueio, é o fluxo esperado sem SMTP);

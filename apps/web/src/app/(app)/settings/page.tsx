@@ -1,11 +1,7 @@
 import type {
   ConversionEventNameDto,
-  ConversionRuleDto,
   CurrentWorkspaceDto,
   FunnelConfigurationDto,
-  InboundWebhookChannelDto,
-  InboundWebhookConnectionDto,
-  ProviderConversionRuleDto,
   WorkspaceOpsAlertSettings,
   WorkspaceInviteDto,
   WorkspaceMemberDto,
@@ -17,11 +13,11 @@ import {
   Bell,
   Building2,
   ChevronDown,
+  Coins,
   ShieldCheck,
   UserPlus,
   UsersRound,
   Workflow,
-  Zap,
 } from "lucide-react";
 import {
   BackofficeActionForm,
@@ -36,21 +32,12 @@ import { TeamActionButton } from "../../../components/team-action-button";
 import { displayTimeZone } from "../../../lib/date-time";
 import { serverApiFetch } from "../../../lib/server-api";
 import { getCurrentWorkspace } from "../../../lib/current-workspace";
-import { ProviderConversionRulePanel } from "../integrations/provider-conversion-rule-panel";
-import { saveOpsAlertSettingsAction } from "./ops-alert-settings-actions";
 import {
-  createProviderConversionRuleAction,
-  loadProviderConversionAutomationAuditAction,
-  loadProviderConversionAutomationPayloadAction,
-  loadProviderConversionExecutionAuditAction,
-  loadProviderConversionPurchaseAuditAction,
-  removeProviderConversionRuleAction,
-  reprocessProviderConversionAutomationCallbacksAction,
-  rotateProviderConversionRuleEndpointAction,
-  testProviderCatalogMessageAction,
-  updateProviderConversionRuleAction,
-} from "../integrations/provider-conversion-rule-actions";
-
+  getAdAccountCurrencies,
+  getWorkspaceCurrencySettings,
+} from "../../../lib/currency-settings";
+import { CurrencySettingsSection } from "./currency-settings-section";
+import { saveOpsAlertSettingsAction } from "./ops-alert-settings-actions";
 type AccountUserDto = {
   id: string;
   email: string;
@@ -102,23 +89,6 @@ function defaultOpsAlertSettings(
     updatedAt: null,
   });
 }
-
-type ConversionRulesResult = {
-  rules: ConversionRuleDto[];
-  state: "real" | "empty" | "error";
-};
-
-type InboundConnectionWithChannels = {
-  connection: InboundWebhookConnectionDto;
-  channels: InboundWebhookChannelDto[];
-};
-
-type ProviderConversionSettingsResult = {
-  connections: InboundConnectionWithChannels[];
-  rules: ProviderConversionRuleDto[];
-  enabled: boolean;
-  state: "real" | "empty" | "error";
-};
 
 type FunnelConfigurationResult = {
   configuration: FunnelConfigurationDto;
@@ -255,77 +225,6 @@ async function getOpsAlertSettings(): Promise<OpsAlertSettingsResult> {
   }
 }
 
-async function getConversionRules(): Promise<ConversionRulesResult> {
-  try {
-    const rules =
-      await serverApiFetch<ConversionRuleDto[]>("/conversion-rules");
-
-    return {
-      rules,
-      state: rules.length > 0 ? "real" : "empty",
-    };
-  } catch {
-    return {
-      rules: [],
-      state: "error",
-    };
-  }
-}
-
-async function getProviderConversionSettings(): Promise<ProviderConversionSettingsResult> {
-  try {
-    const connections = await serverApiFetch<InboundWebhookConnectionDto[]>(
-      "/integrations/inbound-webhooks",
-    );
-    // Todas as conexões inbound (Umbler, Gupshup, …) usam o mesmo centro de gatilhos.
-    const inboundConnections = connections;
-    const [providerRulesResult, channelResults] = await Promise.all([
-      serverApiFetch<ProviderConversionRuleDto[]>(
-        "/conversion-rules/providers",
-      ).then(
-        (rules) => ({ ok: true as const, rules }),
-        () => ({ ok: false as const, rules: [] }),
-      ),
-      Promise.allSettled(
-        inboundConnections.map((connection) =>
-          serverApiFetch<InboundWebhookChannelDto[]>(
-            `/integrations/inbound-webhooks/${encodeURIComponent(connection.id)}/channels`,
-          ),
-        ),
-      ),
-    ]);
-    const providerRules = providerRulesResult.rules;
-    const scopedConnections = inboundConnections.map((connection, index) => ({
-      connection,
-      channels:
-        channelResults[index]?.status === "fulfilled"
-          ? channelResults[index].value
-          : [],
-    }));
-    const hasError =
-      !providerRulesResult.ok ||
-      channelResults.some((result) => result.status === "rejected");
-
-    return {
-      connections: scopedConnections,
-      rules: providerRules,
-      enabled: providerRulesResult.ok,
-      state: hasError
-        ? "error"
-        : scopedConnections.length > 0
-          ? "real"
-          : "empty",
-    };
-  } catch {
-    return {
-      connections: [],
-      rules: [],
-      enabled: false,
-      state: "error",
-    };
-  }
-}
-
 async function getFunnelConfiguration(): Promise<FunnelConfigurationResult> {
   try {
     const configuration = await serverApiFetch<FunnelConfigurationDto>(
@@ -366,17 +265,6 @@ async function getWorkspaceSettings(): Promise<WorkspaceSettingsResult> {
       state: "error",
     };
   }
-}
-
-function inboundProviderLabel(provider: string): string {
-  const labels: Record<string, string> = {
-    umbler: "Umbler Talk",
-    gupshup: "Gupshup",
-    uazapi: "UAZAPI",
-    meta_cloud: "Meta WhatsApp (Cloud API)",
-    data_crazy: "Data Crazy",
-  };
-  return labels[provider] ?? provider;
 }
 
 function shortDate(value: string): string {
@@ -441,9 +329,10 @@ async function saveFunnelConfiguration(
       ? parseMoneyToCents(formData.get(`stageValue:${eventName}`))
       : null,
     defaultCurrency: eventSupportsCommercialValue(eventName)
-      ? String(formData.get(`stageCurrency:${eventName}`) ?? "BRL")
+      ? // "" = padrão do workspace (null: herda a moeda das conversões).
+        String(formData.get(`stageCurrency:${eventName}`) ?? "")
           .trim()
-          .toUpperCase()
+          .toUpperCase() || null
       : null,
     defaultContentName: eventSupportsCommercialValue(eventName)
       ? String(formData.get(`stageProduct:${eventName}`) ?? "").trim() || null
@@ -668,22 +557,21 @@ async function requestEmailVerification() {
 export default async function SettingsPage() {
   const [
     workspaceSettings,
-    conversionRules,
-    providerConversionSettings,
     funnelConfiguration,
     accountSettings,
     opsAlertSettings,
+    currencySettings,
+    adAccountCurrencies,
   ] = await Promise.all([
     getWorkspaceSettings(),
-    getConversionRules(),
-    getProviderConversionSettings(),
     getFunnelConfiguration(),
     getAccountSettings(),
     getOpsAlertSettings(),
+    getWorkspaceCurrencySettings(),
+    getAdAccountCurrencies(),
   ]);
-  const { rules } = conversionRules;
-  const providerRules = providerConversionSettings.rules;
-  const inboundConnections = providerConversionSettings.connections;
+  const workspaceConversionCurrency =
+    currencySettings?.conversionCurrency ?? "BRL";
   const { workspace, members, invites } = workspaceSettings;
   const accountUser = accountSettings.user;
   const funnelStages = funnelConfiguration.configuration.stages;
@@ -718,10 +606,6 @@ export default async function SettingsPage() {
   const visibleFunnelStageCount = funnelStages.filter(
     (stage) => stage.visible,
   ).length;
-  const activeConversionRuleCount = rules.filter((rule) => rule.active).length;
-  const triggerRulesHaveError =
-    conversionRules.state === "error" ||
-    providerConversionSettings.state === "error";
   const currentAccessLabel = isPlatformSupport
     ? "Suporte da plataforma"
     : workspace
@@ -748,10 +632,9 @@ export default async function SettingsPage() {
         </div>
         <div className="header-actions">
           <span
-            className={`status-chip${workspaceSettings.state === "error" || triggerRulesHaveError || funnelConfiguration.state === "error" ? " warn" : ""}`}
+            className={`status-chip${workspaceSettings.state === "error" || funnelConfiguration.state === "error" ? " warn" : ""}`}
           >
             {workspaceSettings.state === "error" ||
-            triggerRulesHaveError ||
             funnelConfiguration.state === "error"
               ? "API indisponivel"
               : "API conectada"}
@@ -819,16 +702,12 @@ export default async function SettingsPage() {
               className="settings-overview-icon automation"
               aria-hidden="true"
             >
-              <Zap size={19} />
+              <Workflow size={19} />
             </span>
             <span>
-              <small>Conversoes</small>
-              <strong>
-                {activeConversionRuleCount} gatilho
-                {activeConversionRuleCount === 1 ? "" : "s"} ativo
-                {activeConversionRuleCount === 1 ? "" : "s"}
-              </strong>
-              <span>{visibleFunnelStageCount} etapas visiveis</span>
+              <small>Jornada</small>
+              <strong>{visibleFunnelStageCount} etapas visiveis</strong>
+              <span>As regras de conversão ficam em Conversões</span>
             </span>
           </article>
         </div>
@@ -848,7 +727,11 @@ export default async function SettingsPage() {
         </a>
         <a href="#configuracao-conversoes">
           <Workflow size={16} aria-hidden="true" />
-          Conversoes
+          Jornada
+        </a>
+        <a href="#configuracao-moeda">
+          <Coins size={16} aria-hidden="true" />
+          Moeda
         </a>
         <a href="#configuracao-operacao">
           <Bell size={16} aria-hidden="true" />
@@ -1259,17 +1142,17 @@ export default async function SettingsPage() {
             03
           </span>
           <div>
-            <span className="eyebrow">Conversoes</span>
-            <h2 id="settings-conversion-title">Jornada e gatilhos</h2>
+            <span className="eyebrow">Jornada</span>
+            <h2 id="settings-conversion-title">Jornada</h2>
             <p>
-              Controle a leitura do funil e os eventos reconhecidos nas
-              conversas.
+              Controle a ordem e o nome das etapas do funil. As regras de
+              conversão ficam em <Link href="/conversions">Conversões</Link>.
             </p>
           </div>
           <span className="status-chip">
-            {activeConversionRuleCount} gatilho
-            {activeConversionRuleCount === 1 ? "" : "s"} ativo
-            {activeConversionRuleCount === 1 ? "" : "s"}
+            {visibleFunnelStageCount} etapa
+            {visibleFunnelStageCount === 1 ? "" : "s"} visíve
+            {visibleFunnelStageCount === 1 ? "l" : "is"}
           </span>
         </div>
 
@@ -1362,9 +1245,12 @@ export default async function SettingsPage() {
                             <label>
                               <span>Moeda</span>
                               <select
-                                defaultValue={stage.defaultCurrency ?? "BRL"}
+                                defaultValue={stage.defaultCurrency ?? ""}
                                 name={`stageCurrency:${stage.eventName}`}
                               >
+                                <option value="">
+                                  {`Padrão do workspace (${workspaceConversionCurrency})`}
+                                </option>
                                 <option value="BRL">BRL</option>
                                 <option value="USD">USD</option>
                                 <option value="EUR">EUR</option>
@@ -1408,139 +1294,14 @@ export default async function SettingsPage() {
             </div>
           </details>
 
-          <details
-            id="whatsapp-triggers"
-            className="surface-panel settings-automation-details conversion-rules-panel"
-            open
-          >
-            <summary>
-              <span
-                className="settings-automation-icon rules"
-                aria-hidden="true"
-              >
-                <Zap size={19} />
-              </span>
-              <span className="settings-automation-copy">
-                <span className="eyebrow">Mapeamento de eventos</span>
-                <strong>Gatilhos de conversao</strong>
-                <small>
-                  Um unico lugar para frase, checkout, compra, catalogo e tags —
-                  vale para qualquer conexao WhatsApp do workspace.
-                </small>
-              </span>
-              <span
-                className={`status-chip${triggerRulesHaveError ? " warn" : ""}`}
-              >
-                {triggerRulesHaveError
-                  ? "Regras indisponiveis"
-                  : `${activeConversionRuleCount}/${rules.length} ativos`}
-              </span>
-              <span className="settings-automation-action">
-                Configurar
-                <ChevronDown size={16} aria-hidden="true" />
-              </span>
-            </summary>
-            <div className="settings-automation-body trigger-center-body">
-              <section className="trigger-source-section">
-                <header className="trigger-center-section-heading">
-                  <div>
-                    <span className="eyebrow">Origens conectadas</span>
-                    <h3>Regras por conexao e canal</h3>
-                    <p className="muted">
-                      Configure checkout, compra, catalogo e tags no mesmo fluxo
-                      para cada conexao (Umbler, Gupshup e demais origens
-                      inbound). Limite o gatilho aos canais que devem converter.
-                    </p>
-                  </div>
-                  <Link className="button" href="/integrations">
-                    Gerenciar conexoes
-                  </Link>
-                </header>
-
-                {inboundConnections.length > 0 ? (
-                  <div className="trigger-source-list">
-                    {inboundConnections.map(({ connection, channels }) => {
-                      const connectionRules = providerRules.filter(
-                        (rule) => rule.connectionId === connection.id,
-                      );
-
-                      return (
-                        <details
-                          className="trigger-source-details"
-                          key={connection.id}
-                          open={inboundConnections.length === 1}
-                        >
-                          <summary>
-                            <span className="trigger-source-identity">
-                              <span className="micro-label">
-                                {inboundProviderLabel(connection.provider)}
-                              </span>
-                              <strong>{connection.displayName}</strong>
-                              <small>
-                                {channels.length} canal(is) descoberto(s)
-                              </small>
-                            </span>
-                            <span className="status-chip">
-                              {connectionRules.length} gatilho(s)
-                            </span>
-                            <ChevronDown size={16} aria-hidden="true" />
-                          </summary>
-                          <div className="trigger-source-body">
-                            <ProviderConversionRulePanel
-                              connectionId={connection.id}
-                              connectionProvider={connection.provider}
-                              channels={channels}
-                              rules={connectionRules}
-                              enabled={providerConversionSettings.enabled}
-                              canManage={canManageConversionRules}
-                              createAction={createProviderConversionRuleAction}
-                              updateAction={updateProviderConversionRuleAction}
-                              rotateEndpointAction={
-                                rotateProviderConversionRuleEndpointAction
-                              }
-                              loadAutomationAuditAction={
-                                loadProviderConversionAutomationAuditAction
-                              }
-                              loadAutomationPayloadAction={
-                                loadProviderConversionAutomationPayloadAction
-                              }
-                              loadPurchaseAuditAction={
-                                loadProviderConversionPurchaseAuditAction
-                              }
-                              loadExecutionAuditAction={
-                                loadProviderConversionExecutionAuditAction
-                              }
-                              reprocessAutomationCallbacksAction={
-                                reprocessProviderConversionAutomationCallbacksAction
-                              }
-                              removeAction={removeProviderConversionRuleAction}
-                              testMessageAction={
-                                testProviderCatalogMessageAction
-                              }
-                            />
-                          </div>
-                        </details>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="trigger-source-empty">
-                    <strong>Nenhuma conexao WhatsApp disponivel</strong>
-                    <span>
-                      Crie a conexao em Integracoes (Umbler, Gupshup, etc.);
-                      depois os canais aparecem aqui para configurar os gatilhos
-                      no mesmo lugar.
-                    </span>
-                    <Link className="button" href="/integrations">
-                      Abrir Integracoes
-                    </Link>
-                  </div>
-                )}
-              </section>
-            </div>
-          </details>
         </div>
       </section>
+
+      <CurrencySettingsSection
+        accounts={adAccountCurrencies}
+        sectionNumber="04"
+        settings={currencySettings}
+      />
 
       <section
         className="settings-domain-section settings-ops-alerts-domain"
@@ -1549,7 +1310,7 @@ export default async function SettingsPage() {
       >
         <div className="settings-domain-heading">
           <span className="settings-domain-number" aria-hidden="true">
-            04
+            05
           </span>
           <div>
             <span className="eyebrow">Operacao</span>

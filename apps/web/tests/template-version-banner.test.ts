@@ -251,7 +251,7 @@ describe("TemplateVersionBanner states", () => {
     expect(await render(await TemplateVersionBanner())).toBe("<div></div>");
   });
 
-  it("unknown (no GIT_SHA): explains the missing commit without claiming the instance is current", async () => {
+  it("unknown (no build identity): explains the missing commit without claiming the instance is current", async () => {
     mockApi({
       "/auth/me": async () => jsonResponse(session("platform_owner")),
       "/backoffice/template-version": async () =>
@@ -261,7 +261,9 @@ describe("TemplateVersionBanner states", () => {
     const html = await render(await TemplateVersionBanner());
 
     expect(html).toContain("Não foi possível verificar atualizações");
-    expect(html).toContain("GIT_SHA");
+    expect(html).toContain("não conseguiu confirmar o commit instalado");
+    // The commit is detected automatically; never send students to a build arg.
+    expect(html).not.toContain("GIT_SHA");
     expect(html).toContain("não significa que ela esteja atualizada");
     expect(html).not.toContain("Versão instalada <code>");
     expect(html).toContain(`href="${GUIDE}"`);

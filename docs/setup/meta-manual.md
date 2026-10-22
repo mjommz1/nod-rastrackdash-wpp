@@ -1,8 +1,11 @@
 # Meta Ads manual — usuário do sistema (edição aluno)
 
 Este guia é sobre a conexão de **Meta Ads**: anúncios, Pixel, conta de
-anúncios e destino de conversão. Este é o único caminho do MVP do aluno:
-**sem login social Facebook e sem OAuth como alternativa**. Antes de abrir
+anúncios e destino de conversão, pelo **token permanente** do usuário do
+sistema. Não há o OAuth antigo (app Meta próprio) como alternativa. A outra
+forma suportada é o botão **Conectar Meta (PalmUP)**, que dispensa criar app
+Meta próprio — veja [`environment.md`](environment.md#palmup_meta_broker_url--login-social-meta-pela-palmup).
+Antes de abrir
 a Meta, defina `META_CONNECTION_MODES=manual` no ambiente da API e faça
 redeploy. Se as capabilities não carregarem, a tela deve permanecer
 fechada; não tente contornar isso com OAuth.
@@ -12,7 +15,7 @@ fechada; não tente contornar isso com OAuth.
 | | **Meta Ads** (este guia) | **Meta WhatsApp (Cloud API)** |
 |---|---|---|
 | O que entrega | Anúncios, Pixel, Página, conta de anúncios, destino de conversão | **Mensagens** recebidas pelo seu número oficial, com atribuição de CTWA |
-| Onde se configura | `/integrations` → conexão manual Meta | `/integrations` → **Webhooks de entrada** → Meta WhatsApp (Cloud API) |
+| Onde se configura | `/integrations` → aba **Anúncios** → card **Meta Ads** | `/integrations` → aba **WhatsApp** → card **WhatsApp Cloud API** |
 | Credencial | Token de **usuário do sistema** do Gerenciador de Negócios | **Verify token** gerado pelo produto + (opcional) `META_APP_SECRET` |
 | Webhook | `GET`/`POST /webhooks/meta`, com `META_WEBHOOK_VERIFY_TOKEN` | `GET`/`POST /webhooks/inbound/:id` |
 
@@ -40,15 +43,32 @@ O handshake do webhook de **Meta Ads** usa `META_WEBHOOK_VERIFY_TOKEN` e o rotea
 5. Teste/salve a conexão e faça a descoberta dos ativos. Se a validação falhar, corrija permissões, BM ou token na Meta antes de seguir.
 6. Selecione explicitamente o BM, a conta de anúncios para relatórios, o Pixel e a Página que receberão a conversão. Salve o destino e valide a seleção no workspace.
 
+Para a **rota de mensagens Meta Cloud**, a opção **qualquer conta do BM**
+permite uma única rota para várias contas. Cada conta ainda precisa ter
+autorização própria para o destino; o destino padrão do BM não concede esse
+acesso. Conta/destino opcionais são resolvidos pelo anúncio, sem ignorar
+atribuições ambíguas. Veja [ativação e limites de recuperação de CTWA](whatsapp-providers.md#rota-com-qualquer-conta-do-bm-e-ativação-do-meta-cloud).
+
 ## Verificação
 
-- `/integrations` mostra a conexão manual Meta como conectada, os ativos descobertos e o destino (BM/Pixel/Página/conta) selecionado
+- `/integrations` (aba **Anúncios** → card **Meta Ads**) mostra a conexão manual Meta como conectada, os ativos descobertos e o destino (BM/Pixel/Página/conta) selecionado
 - `GET /onboarding/status` → `metaConnected: true` (com workspace ativo)
 - Relatórios/leads deixam de falhar por “meta not configured”
 
+## Trocar token sem refazer a estrutura
+
+Depois que a estrutura existe em **Integrações → Tokens, BMs e destinos**, o token é sempre trocado **no mesmo card**:
+
+1. No card do BM, clique no ícone de **chave** (**Trocar token**).
+2. Cole o token permanente e clique em **Validar troca**.
+
+BM, conta de anúncios, pixel, página e destinos continuam os mesmos. Para trocar token, **não** use **+ Nova conexao** e **não** apague a estrutura (lixeira) — isso só faz você refazer a configuração toda.
+
+**Acabou de atualizar a instância?** Faça o **Trocar token** uma vez, colando o **mesmo** token que você já usa. Nesta versão, todo envio de conversão (inclusive LeadSubmitted e Kommo) passou a usar esta estrutura; sem essa regravação, o LeadSubmitted fica **Bloqueado** mesmo com o card aparecendo como **Ativa**. É uma mudança do produto, não um erro seu. Detalhes em [`update.md`](update.md#conversões-meta-depois-desta-atualização-trocar-token).
+
 ## Segurança
 
-- Rotacione o token se vazar
+- Rotacione o token se vazar, pelo **Trocar token** do mesmo card
 - Não commite `.env` nem captures de tela com token
 - Prefira um usuário do sistema limitado ao Gerenciador de Negócios do cliente, e não um token pessoal de longa duração sem necessidade
 - Não envie App ID/token por chat e nunca use `***` como valor de token; `***` só redige valores em logs compartilhados

@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plug,
+  Route,
   Send,
   Settings2,
   ShieldCheck,
@@ -49,6 +50,7 @@ const navigationIconById: Record<ClientNavigationId, LucideIcon> = {
   reports: BarChart3,
   events: Send,
   integrations: Plug,
+  conversions: Route,
   settings: Settings2,
 };
 
@@ -59,7 +61,7 @@ const navigationGroupDefinitions = [
   },
   {
     label: "Gestao",
-    ids: ["integrations", "settings"],
+    ids: ["integrations", "conversions", "settings"],
   },
 ] as const;
 
@@ -509,7 +511,7 @@ export function AppShell({
           <PresentationModeToggle />
           <LogoutButton />
         </section>
-        <BrandFooter brand={brand} />
+        <BrandFooter brand={brand} className="sidebar-footer" />
       </aside>
       <button
         className="mobile-sidebar-backdrop"
@@ -538,6 +540,7 @@ export function AppShell({
         ) : null}
         {workspace ? <DataAutoRefresh source={dataSource ?? null} /> : null}
         {children}
+        <BrandFooter brand={brand} className="content-footer" />
       </main>
     </div>
   );

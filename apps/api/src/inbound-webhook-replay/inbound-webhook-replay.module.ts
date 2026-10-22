@@ -11,10 +11,15 @@ import { LeadsModule } from "../leads/leads.module";
 import { InboundWebhookReplayQueueService } from "./inbound-webhook-replay-queue.service";
 import { InboundWebhookReplayProcessor } from "./inbound-webhook-replay.processor";
 import { InboundWebhookReplayService } from "./inbound-webhook-replay.service";
+import { StudentInboundReplayController } from "./student-inbound-replay.controller";
+import { WorkspacesModule } from "../workspaces/workspaces.module";
+import { LicenseClientModule } from "../licensing-client/license-client.module";
 
 @Module({
   imports: [
     AuthModule,
+    WorkspacesModule,
+    LicenseClientModule,
     PrismaModule,
     RuntimeModule,
     QueueModule,
@@ -25,7 +30,7 @@ import { InboundWebhookReplayService } from "./inbound-webhook-replay.service";
       name: INBOUND_WEBHOOK_REPLAY_QUEUE,
     }),
   ],
-  controllers: [],
+  controllers: [StudentInboundReplayController],
   providers: [
     InboundWebhookReplayProcessor,
     InboundWebhookReplayQueueService,

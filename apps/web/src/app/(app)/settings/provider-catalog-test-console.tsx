@@ -3,7 +3,7 @@
 import { FlaskConical } from "lucide-react";
 import type { FormEvent } from "react";
 import { useState } from "react";
-import type { ProviderConversionRuleActionResult } from "../integrations/provider-conversion-rule-actions";
+import type { ProviderConversionRuleActionResult } from "../conversions/actions";
 import { ProviderCatalogTestResult } from "./provider-catalog-test-result";
 
 type ProviderCatalogTestConsoleProps = {

@@ -7,6 +7,7 @@ const exportQueryParams = [
   "until",
   "businessId",
   "adAccountId",
+  "adAccountIds",
   "nameScope",
   "nameContains",
   "status",

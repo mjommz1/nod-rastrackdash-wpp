@@ -110,6 +110,9 @@ function managementNavIdForPath(pathname: string): ClientNavId | null {
   if (pathname === "/integrations" || pathname.startsWith("/integrations/")) {
     return "integrations";
   }
+  if (pathname === "/conversions" || pathname.startsWith("/conversions/")) {
+    return "conversions";
+  }
   if (pathname === "/settings" || pathname.startsWith("/settings/")) {
     return "settings";
   }

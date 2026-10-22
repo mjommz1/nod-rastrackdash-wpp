@@ -80,7 +80,7 @@ Cada entrada segue: **sintoma → diagnóstico seguro → causa provável → co
 
 - **Diagnóstico:** a resposta traz "Receiver inbound para nod_api ainda nao esta disponivel".
 - **Causa:** o `nod_api` tem adapter de status/health, mas **ainda não tem parser/receiver inbound** neste código. Não é configuração.
-- **Correção:** para receber mensagens hoje, use Uazapi (BYO), WAHA, Z-API, Umbler, Gupshup ou Meta WhatsApp (Cloud API) — veja [`whatsapp-providers.md`](whatsapp-providers.md#matriz-de-ingestão-inbound-o-que-realmente-chega-hoje). Não invente uma URL alternativa.
+- **Correção:** para receber mensagens hoje, use Uazapi (BYO), Umbler, Gupshup ou Meta WhatsApp (Cloud API) — veja [`whatsapp-providers.md`](whatsapp-providers.md#matriz-de-ingestão-inbound-o-que-realmente-chega-hoje). Não invente uma URL alternativa.
 - **Verificação:** com um provedor com receiver pronto, o evento de teste é aceito com `202`.
 
 ## Meta WhatsApp (Cloud API): a Meta recusa o webhook na verificação
@@ -110,10 +110,27 @@ Cada entrada segue: **sintoma → diagnóstico seguro → causa provável → co
 
 ## Aparece UI OAuth/social do Facebook
 
+- **Não é este problema:** o botão **Conectar Meta (PalmUP)** dentro de **Tokens, BMs e destinos** é esperado — é o login social pela PalmUP, sem app Meta próprio (veja a seção abaixo). Este item trata do OAuth **antigo**, com card próprio de conexão OAuth e **Desconectar OAuth**.
 - **Diagnóstico:** confira `META_CONNECTION_MODES` no ambiente da API e o resultado de `/integrations` após redeploy.
 - **Causa provável:** a variável está ausente/não é `manual`, a API não foi redeployada, ou as capabilities Meta não estão disponíveis.
 - **Correção:** defina exatamente `META_CONNECTION_MODES=manual`, redeploy a API e atualize a página. Se as capabilities estiverem indisponíveis, a UI deve permanecer fechada e mostrar configuração Meta indisponível; não use OAuth como contorno.
-- **Verificação:** `/integrations` exibe apenas a conexão manual Meta, sem login social/OAuth.
+- **Verificação:** `/integrations` exibe apenas a conexão manual Meta (token permanente e, se configurado, **Conectar Meta (PalmUP)**), sem o OAuth antigo.
+
+## "Conectar Meta (PalmUP)" apagado ou "Login social PalmUP nao configurado"
+
+- **Sintoma:** em **Tokens, BMs e destinos**, ao clicar em **Conectar Meta (PalmUP)** o painel avisa "Login social PalmUP nao configurado" e o botão fica apagado — ou o botão nem aparece.
+- **Diagnóstico seguro:** confira (1) se você entrou como **owner** do workspace — membros, mesmo com permissão de integrações, não veem o botão; (2) se `PALMUP_META_BROKER_URL` está preenchida no env do serviço da **API**; (3) se o workspace ainda usa o OAuth antigo (nesse caso o botão não aparece).
+- **Causa provável:** env vazia/ausente na API, valor com caminho ou `http://` (precisa ser só a origem HTTPS: `https://wpptrack-api.rastrack.app`), API sem redeploy depois de alterar a env, ou usuário que não é owner.
+- **Correção:** preencha `PALMUP_META_BROKER_URL=https://wpptrack-api.rastrack.app` no env da API e faça redeploy. É uma URL pública: **não** coloque ali, nem em `META_APP_SECRET`, segredo nenhum — o App Secret do app Meta da PalmUP **nunca** vai para a sua VPS. O web não precisa dessa env. Enquanto isso, o token permanente continua funcionando.
+- **Verificação:** recarregue `/integrations` como owner; **Conectar Meta (PalmUP)** fica clicável e abre **Abrir login da Meta**.
+
+## "Conexao PalmUP expirada, invalida ou ja utilizada"
+
+- **Sintoma:** ao clicar em **Ja autorizei, concluir**, o painel mostra "Conexao PalmUP expirada, invalida ou ja utilizada. Inicie novamente" ou "Nao foi possivel concluir o login social PalmUP".
+- **Causa provável:** passou o prazo do pedido (cerca de 10 minutos), você clicou em concluir **antes** de terminar a autorização na aba da PalmUP, o pedido já tinha sido usado, ou a API não alcançou a PalmUP naquele momento. Cada pedido só pode ser concluído uma vez, com ou sem sucesso.
+- **Correção:** clique em **Conectar Meta (PalmUP)** de novo, termine a autorização na aba nova e só depois clique em **Ja autorizei, concluir**. Se a Meta recusar as permissões, use o caminho do token permanente ([`meta-manual.md`](meta-manual.md)).
+- **Verificação:** o painel avisa "Meta conectada pela PalmUP e token protegido" e segue para a escolha de BM. O token nunca aparece na tela.
+- **Já tem card e o LeadSubmitted está Bloqueado?** Não é este fluxo: siga [LeadSubmitted "Bloqueado" depois de atualizar](#leadsubmitted-bloqueado-depois-de-atualizar-destino-meta-ainda-nao-configurado--a-conexao-meta-precisa-ser-refeita) (**Trocar token** + **Reenviar bloqueados**), que continua valendo.
 
 ## Preview da Vercel com origem divergente
 
@@ -153,27 +170,27 @@ Cada entrada segue: **sintoma → diagnóstico seguro → causa provável → co
 ## "Instância Uazapi (BYO)" no rodapé de Integrações diz que é instância única
 
 - **Diagnóstico:** o card no fim de `/integrations` mostra o texto "Esta edição conecta uma única instância Uazapi configurada por variável de ambiente".
-- **Causa:** esse card é o **status global do deployment**, lido de `UAZAPI_BASE_URL`/`UAZAPI_TOKEN`. Ele não descreve o painel **"Provedores e receivers"** logo acima, que é por workspace e aceita várias conexões.
-- **Correção:** nenhuma — são dois painéis com escopos diferentes. Para conexões por cliente, use sempre o painel "Provedores e receivers".
+- **Causa:** esse card é o **status global do deployment**, lido de `UAZAPI_BASE_URL`/`UAZAPI_TOKEN`. Ele não descreve as conexões do card do provedor (aba **WhatsApp**), que são por workspace e aceitam várias conexões.
+- **Correção:** nenhuma — são dois painéis com escopos diferentes. Para conexões por cliente, use sempre a lista de conexões do card do provedor.
 - **Verificação:** duas conexões diferentes criadas em workspaces diferentes aparecem cada uma no seu workspace, com status próprio no botão **Testar**.
 
 ## Recebo leads/webhooks mas não aparece Nova regra
 
 - **Diagnóstico:** confira na env da API se `INBOUND_WEBHOOKS_ENABLED`, `INBOUND_CONVERSION_RULES_ENABLED` e (em produção) `INBOUND_WEBHOOK_PRODUCTION_ENABLED` estão `true`, e se `INBOUND_WEBHOOK_ENCRYPTION_KEY` está preenchida — veja [`environment.md`](environment.md#gatilhos-de-conversão--obrigatórias-no-caminho-do-aluno).
-- **Causa provável:** o padrão de todas as `INBOUND_*` é desligado (`false`/vazio); receber leads/webhooks (UAZAPI, NOD, WAHA, Z-API, etc.) não depende dessas variáveis, mas **Gatilhos de conversão → Nova regra** depende — sem elas ligadas, a tela fica sem criar regra mesmo com leads chegando normalmente. Também pode ser um deploy antigo que ainda não aplicou uma env alterada.
+- **Causa provável:** o padrão de todas as `INBOUND_*` é desligado (`false`/vazio); receber leads/webhooks (UAZAPI, NOD, WAHA, Z-API, etc.) não depende dessas variáveis, mas **Conversões → Nova regra** depende — sem elas ligadas, a tela fica sem criar regra mesmo com leads chegando normalmente. Também pode ser um deploy antigo que ainda não aplicou uma env alterada.
 - **Correção:** defina `INBOUND_WEBHOOKS_ENABLED=true`, `INBOUND_WEBHOOK_ENCRYPTION_KEY=<gerada com node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))">`, `INBOUND_CONVERSION_RULES_ENABLED=true` e `INBOUND_WEBHOOK_PRODUCTION_ENABLED=true` (produção) direto no painel de env do serviço da API; redeploy a API (e o web também, se a versão publicada estiver desatualizada).
-- **Verificação:** com uma conexão WhatsApp/origem já existente, `/settings#whatsapp-triggers` mostra **Nova regra** disponível.
+- **Verificação:** com uma conexão WhatsApp/origem já existente, `/conversions` mostra **Nova regra** disponível.
 
-## As envs `INBOUND_*` estão ligadas, mas a origem não aparece em Gatilhos
+## As envs `INBOUND_*` estão ligadas, mas o número não aparece em Conversões
 
-- **Diagnóstico:** `/settings#whatsapp-triggers` abre, mas a lista "Origens conectadas" está vazia (ou não lista a conexão que você criou).
+- **Diagnóstico:** `/conversions` abre, mas em **Nova regra → Alcance** não aparece o número que você esperava (ou ele aparece como "Em breve", sem poder escolher).
 - **Causa provável, por origem:**
-  - **Umbler, Gupshup, Meta WhatsApp (Cloud API):** a origem aparece assim que a conexão existe em `/integrations` → **Webhooks de entrada**. Se você criou a conexão no painel **"Provedores e receivers"**, criou outra coisa — são painéis diferentes.
+  - **Umbler, Gupshup, Meta WhatsApp (Cloud API):** a origem aparece assim que a conexão existe em `/integrations` (card Umbler/Gupshup na aba **Atendimento e vendas**, ou card **WhatsApp Cloud API** na aba **WhatsApp**). Se você criou a conexão no card de um provedor Uazapi/NOD API/WAHA/Z-API, criou outra coisa — são cards diferentes.
   - **Uazapi:** a origem é criada automaticamente pelo produto, mas só quando chega pelo receiver uma mensagem **enviada pelo número conectado** (atendente) ou uma mudança de etiqueta. Uma mensagem apenas recebida do cliente não cria a origem. Responda uma conversa pelo número conectado e recarregue.
-  - **WAHA e Z-API:** recebem leads normalmente, mas **ainda não têm** criação automática de origem na central de Gatilhos. É lacuna conhecida do produto, não configuração.
-  - **NOD API:** sem receiver inbound (`501`), não há origem.
+  - **WAHA, Z-API e NOD API:** recebem leads normalmente, mas **ainda não participam das regras de conversão**: na tela Conversões os números aparecem como "Em breve". É lacuna conhecida do produto, não configuração.
+  - **Gupshup, Data Crazy e WhatsApp Cloud API:** funcionam normalmente: leads e conversões chegam pelo webhook do provedor (CTWA). As regras de frase, etiqueta e catálogo não se aplicam a esses números, então eles não aparecem como escolha no alcance; a tela Conversões mostra uma nota neutra, não "Em breve".
 - **Correção:** use o painel certo para cada plataforma e, no caso da Uazapi, gere um evento de atendente/etiqueta. Não tente criar uma conexão inbound `uazapi` na mão — a API recusa de propósito ("Conexoes UAZAPI sao criadas automaticamente a partir da instancia WhatsApp").
-- **Verificação:** a origem aparece em "Origens conectadas" com o número de canais, e **Nova regra** abre o formulário.
+- **Verificação:** o número aparece em **Nova regra → Alcance → Números específicos** (ou entra em "Todos os números"), e **Nova regra** abre o formulário.
 
 ## Canal/número não aparece para escolher na regra (Umbler/Gupshup/Meta Cloud)
 
@@ -189,13 +206,40 @@ Cada entrada segue: **sintoma → diagnóstico seguro → causa provável → co
 - **Correção:** siga [`meta-manual.md`](meta-manual.md) para gerar e colar um novo token no workspace certo.
 - **Verificação:** `/integrations` mostra Meta conectado e os relatórios voltam a popular.
 
+## LeadSubmitted "Bloqueado" depois de atualizar ("Destino Meta ainda nao configurado" / "A conexao Meta precisa ser refeita")
+
+- **Sintoma:** depois de atualizar a instância, a **Auditoria de conversoes** (`/events`) mostra o LeadSubmitted como **Bloqueado**, com "Destino Meta ainda nao configurado" e "A conexao Meta precisa ser refeita". Ao mesmo tempo, **Integrações → Tokens, BMs e destinos** parece tudo certo: estrutura **Ativa**, pixel e página escolhidos, rotas automáticas ligadas.
+- **Diagnóstico seguro:** só olhe. Abra `/integrations` → **Tokens, BMs e destinos** e veja se já existe um card do seu BM. Não apague nada e não crie nada ainda.
+- **Causa:** mudança do produto, não erro seu. Nesta versão, todo envio para a Meta (LeadSubmitted automático e Kommo) passou a usar a estrutura de **Tokens, BMs e destinos**, e o token guardado antes da atualização precisa ser regravado uma vez nesse card.
+- **Correção — uma ação só:**
+  - **Já tem card:** no card do BM, clique no ícone de **chave** (**Trocar token**), cole o **mesmo** token permanente e clique em **Validar troca**. **Não** use **+ Nova conexao** e **não** apague a estrutura (lixeira). BM, conta, pixel e página continuam os mesmos, e o mesmo token não cria um segundo BM. Só gere token novo na Meta se ela recusar o atual — e cole pelo mesmo **Trocar token**.
+  - **Lista vazia** (você usava o caminho antigo da Alpha / login social): crie a estrutura pela primeira vez seguindo [`meta-manual.md`](meta-manual.md).
+  - **Eventos que já ficaram Bloqueado:** não voltam sozinhos. Depois do Trocar token, **atualize a instância** (API e web) e, como owner, abra `/events`, escolha um período que cubra desde quando os eventos ficaram bloqueados, clique em **Aplicar** e em **Reenviar bloqueados**. Até 500 por clique; evento já enviado nunca é reenviado. Numa instância ainda não atualizada o botão não existe e os bloqueados não são reenviados. Não crie BM novo, não use **+ Nova conexao** e não recrie leads.
+- **Verificação:** os eventos reenviados passam para **Na fila** e depois **Enviado**, e os **próximos** LeadSubmitted já chegam assim. Se algum voltar para **Bloqueado**, refaça o Trocar token no mesmo card e clique em **Reenviar bloqueados** de novo. Passo a passo completo em [`update.md`](update.md#eventos-que-já-ficaram-bloqueado).
+
+## Não aparece "Reenviar bloqueados" em `/events`
+
+- **Sintoma:** você tem eventos **Bloqueado** na **Auditoria de conversoes**, mas não vê o botão **Reenviar bloqueados**, ou ele está apagado.
+- **Diagnóstico seguro:** confira (1) se você entrou como **owner** do workspace; (2) se a API **e** o web estão na versão mais recente (veja [`update.md`](update.md#passo-5--verificação-pós-atualização)); (3) se o período em **Inicio**/**Fim** e os filtros cobrem os dias em que os eventos ficaram bloqueados.
+- **Causa provável:** usuário que não é owner (membros não reenviam), instância ainda não atualizada (o botão não existe nas versões antigas), ou período/filtro sem evento bloqueado (o botão fica apagado).
+- **Correção:** entre com o owner, atualize API e web, ajuste o período e clique em **Aplicar** antes de **Reenviar bloqueados**.
+- **Verificação:** o painel mostra quantos eventos foram para a fila; eles passam para **Na fila** e depois **Enviado**.
+
 ## Não apareceu Data Crazy / feature nova depois do merge
 
-- **Sintoma:** a novidade já está na `main` do template (ex.: **Data Crazy** em `/integrations` → **Webhooks de entrada** → **Adicionar conexão**), mas a sua instância publicada não mostra.
+- **Sintoma:** a novidade já está na `main` do template (ex.: **Data Crazy** em `/integrations` → aba **Atendimento e vendas** → card **Data Crazy**), mas a sua instância publicada não mostra.
 - **Diagnóstico seguro:** confira (1) se o seu deploy usa o repositório público na `main` ou um fork seu — e, se for fork, se ele foi sincronizado; (2) a data/commit do último deploy da **API** no Dokploy e do último deploy do **web** na Vercel; (3) se o log de boot da API mostrou as migrations aplicadas.
 - **Causa provável:** só um dos lados foi atualizado (API nova com web antigo, ou o contrário), o fork não foi sincronizado, ou o web foi "reiniciado" em vez de ganhar um build novo — telas novas e `NEXT_PUBLIC_*` só entram em build novo.
 - **Correção:** siga [`update.md`](update.md): sincronize o fork (se houver) → redeploy da API no Dokploy (as migrations rodam sozinhas no boot) → novo deploy de produção do web a partir da `main`. **Não reinstale**: banco, administrador, `LICENSE_*` e chaves de criptografia continuam os mesmos. Se o painel **Webhooks de entrada** aparece como indisponível, a causa é outra — confira as envs `INBOUND_*` em [Recebo leads/webhooks mas não aparece Nova regra](#recebo-leadswebhooks-mas-não-aparece-nova-regra).
-- **Verificação:** `/health/ready` retorna `200`, o login segue com o mesmo administrador, e **Data Crazy** aparece na lista de **Adicionar conexão** (a conexão nasce em observação — é esperado).
+- **Verificação:** `/health/ready` retorna `200`, o login segue com o mesmo administrador, e o card **Data Crazy** aparece em `/integrations` (aba **Atendimento e vendas**; a conexão nasce em observação — é esperado).
+
+## `/backoffice` diz "Não foi possível verificar atualizações"
+
+- **Sintoma:** o dono da plataforma vê `Não foi possível verificar atualizações` no `/backoffice`, em vez de `Versão instalada` ou do aviso de atualização disponível.
+- **Diagnóstico seguro:** abra o **log de build** do último deploy da API no Dokploy e procure a linha `build identity:`. Ela diz o commit instalado (`<sha> (source: git)`) ou o motivo do desconhecido (`unknown (...)`).
+- **Causa provável:** imagem anterior a este recurso (sem a linha), build sem pasta `.git`, código alterado depois do clone, fork/branch com commits que não estão na `main` pública, ou GitHub temporariamente indisponível.
+- **Correção:** siga a tabela de [Versão instalada](update.md#quando-aparece-não-foi-possível-verificar-atualizações). **Não** crie `GIT_SHA` em env ou build args no fluxo Dokploy com provedor Git, **não** cole o SHA da `main` para forçar "em dia" e **não** forneça token do GitHub.
+- **Verificação:** novo deploy com `build identity: <40 caracteres> (source: git)` no log e `/backoffice` mostrando `Versão instalada` (ou o aviso de atualização disponível).
 
 ## Dokploy: crash-loop no deploy da API
 

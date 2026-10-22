@@ -33,8 +33,34 @@ import {
   requireInboundWebhookConnection,
 } from "./inbound-webhook-production-activation";
 import { UazapiConversionBridgeService } from "./uazapi-conversion-bridge.service";
+import { effectiveInboundParserStatus } from "./inbound-webhook-parser-eligibility";
+import { normalizePhoneIdentity } from "../common/phone/phone-identity";
 
 const parserVersion = "v1";
+
+type UnnichatConnectionBind = {
+  providerChannelId: string;
+  connectedPhone: string;
+  channelName: string;
+};
+
+/**
+ * Fase 4b: the Unnichat entry webhook carries no provider channel id, so the
+ * connection is created already bound to the client's WhatsApp number. The
+ * normalized phone is the stable channel identity, the same one the parser
+ * receives from the connection (never from the provider payload).
+ */
+function resolveUnnichatConnectionBind(
+  input: InboundWebhookConnectionCreateInputDto,
+): UnnichatConnectionBind | null {
+  if (input.provider !== "unnichat") return null;
+  const connectedPhone = input.connectedPhone
+    ? normalizePhoneIdentity(input.connectedPhone)
+    : undefined;
+  const channelName = input.displayName?.trim();
+  if (!connectedPhone || !channelName || channelName.length > 120) return null;
+  return { providerChannelId: connectedPhone, connectedPhone, channelName };
+}
 
 @Injectable()
 export class InboundWebhookConnectionsService {
@@ -68,16 +94,17 @@ export class InboundWebhookConnectionsService {
       enabled: config.enabled,
       productionEnabled: config.enabled && config.productionEnabled,
       // UAZAPI/NOD is bridged automatically from the WhatsApp instance and
-      // never goes through the generic manual creation flow.
+      // never goes through the generic manual creation flow. Payt is a sales
+      // platform with no WhatsApp number: its rules live in Conversoes.
       providers: inboundWebhookProviders
-        .filter((provider) => provider !== "uazapi")
+        .filter((provider) => provider !== "uazapi" && provider !== "payt")
         .map((provider) => {
           const release = releaseByProvider.get(provider);
 
           return {
             provider,
             parserVersion,
-            parserReleaseStatus: release?.status ?? null,
+            parserReleaseStatus: release ? effectiveInboundParserStatus({ provider, version: parserVersion, status: release.status }) : null,
             creationEnabled:
               config.enabled === true &&
               release !== undefined &&
@@ -142,8 +169,19 @@ export class InboundWebhookConnectionsService {
     const countsByClassification = new Map(
       eventCounts.map((row) => [row.classification, row._count._all]),
     );
+    // Fase 4b: the Unnichat sale automation has its own parser release.
+    const automationParserRelease =
+      connection.provider === "unnichat"
+        ? await this.prisma.inboundWebhookParserRelease.findFirst({
+            where: { provider: "unnichat", version: "automation-v1" },
+            select: { id: true, version: true, status: true },
+          })
+        : undefined;
 
     return {
+      ...(automationParserRelease !== undefined
+        ? { automationParserRelease }
+        : {}),
       connection: this.toDto(connection),
       counters: {
         eligibleRouted:
@@ -184,6 +222,22 @@ export class InboundWebhookConnectionsService {
         "Conexoes UAZAPI sao criadas automaticamente a partir da instancia WhatsApp",
       );
     }
+    if (input.provider === "payt") {
+      // Payt has no WhatsApp number: a Payt rule is created in Conversões
+      // and bound to the connection of its WhatsApp numbers.
+      throw new ConflictException(
+        "A Payt não usa conexão própria: crie a regra de venda em Conversões",
+      );
+    }
+    const unnichatBind = resolveUnnichatConnectionBind(input);
+    if (input.provider === "unnichat" && !unnichatBind) {
+      // The shared schema already requires it; keep the service boundary
+      // fail-closed for direct callers too: the connection must own the
+      // client's number before any payload can be parsed.
+      throw new ConflictException(
+        "Conexões Unnichat exigem o número de WhatsApp do cliente",
+      );
+    }
 
     const config = this.requireEnabledConfig();
     const secret = this.generateSecret();
@@ -220,6 +274,24 @@ export class InboundWebhookConnectionsService {
           parserRelease: true,
         },
       });
+
+      if (unnichatBind) {
+        await transaction.inboundWebhookChannel.create({
+          data: {
+            metaRoutingMode: "inherit_workspace",
+            workspaceId,
+            connectionId: created.id,
+            organizationId: workspaceId,
+            providerChannelId: unnichatBind.providerChannelId,
+            connectedPhone: unnichatBind.connectedPhone,
+            channelName: unnichatBind.channelName,
+            status: "discovered",
+            conversionEngineMode: "canonical",
+            firstSeenAt: created.createdAt,
+            lastSeenAt: created.createdAt,
+          },
+        });
+      }
 
       await this.createAudit(transaction, {
         workspaceId,
@@ -335,6 +407,7 @@ export class InboundWebhookConnectionsService {
         actorUserId,
         requireValidMetaRoute: metaRouteRequiredForProvider(current.provider),
         seats: this.seatHook(),
+        env: this.env,
       });
     });
 
@@ -521,7 +594,7 @@ export class InboundWebhookConnectionsService {
       provider: connection.provider,
       displayName: connection.displayName,
       parserVersion: connection.parserRelease.version,
-      parserReleaseStatus: connection.parserRelease.status,
+      parserReleaseStatus: effectiveInboundParserStatus(connection.parserRelease),
       status: connection.status,
       productionActivatedAt:
         connection.productionActivatedAt?.toISOString() ?? null,

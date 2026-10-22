@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   Get,
   HttpCode,
+  Headers,
   Inject,
   Param,
   Patch,
@@ -21,8 +22,13 @@ import {
   providerConversionRuleAdaptInputSchema,
   providerConversionRuleCreateInputSchema,
   providerConversionRuleExecutionAuditQuerySchema,
+  providerConversionRuleIdempotentCreateInputSchema,
+  providerConversionRuleUnifyInputSchema,
   providerConversionRuleUpdateInputSchema,
+  providerRuleCreateRequestKeySchema,
   structuredCatalogTestMessageInputSchema,
+  RULE_CURRENCY_INVALID_MESSAGE,
+  hasRuleCurrencyIssue,
 } from "@wpptrack/shared";
 import { AuthToken } from "../auth/auth-user.decorator";
 import { AuthService } from "../auth/auth.service";
@@ -54,6 +60,17 @@ export class ConversionRulesController {
     return this.conversionRulesService.listRules(workspaceId);
   }
 
+  /**
+   * "Regras antigas" (palavra-chave / etiqueta sem configuracao de provedor)
+   * for the Conversions screen. Read-only; edits reuse PATCH /:id and
+   * POST providers/adapt/:ruleId.
+   */
+  @Get("legacy")
+  async listLegacy(@AuthToken() refreshToken: string) {
+    const workspaceId = await this.getCurrentWorkspaceId(refreshToken);
+    return this.conversionRulesService.listLegacyRules(workspaceId);
+  }
+
   @Get("funnel")
   async getFunnelConfiguration(@AuthToken() refreshToken: string) {
     const workspaceId = await this.getCurrentWorkspaceId(refreshToken);
@@ -66,23 +83,128 @@ export class ConversionRulesController {
     return this.providerConversionRulesService.listRules(workspaceId);
   }
 
+  /**
+   * Creates a provider rule. With the `Idempotency-Key` header the create is
+   * idempotent: a retry with the same key and body returns
+   * `{ outcome: "replayed", receipt }`, and an unconfirmed create is
+   * reconciled with GET providers/create-receipt.
+   */
   @Post("providers")
   async createProviderRule(
     @AuthToken() refreshToken: string,
     @Body() body: unknown,
+    @Headers("idempotency-key") requestKey?: string,
   ) {
     const context = await this.requireIntegrationManager(refreshToken);
-    const parsed = providerConversionRuleCreateInputSchema.safeParse(body);
+    if (requestKey !== undefined) this.requireCreateRequestKey(requestKey);
+    const parsed = (
+      requestKey === undefined
+        ? providerConversionRuleCreateInputSchema
+        : providerConversionRuleIdempotentCreateInputSchema
+    ).safeParse(body);
 
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(
+        hasRuleCurrencyIssue(parsed.error)
+          ? RULE_CURRENCY_INVALID_MESSAGE
+          : parsed.error.flatten(),
+      );
     }
 
+    if (requestKey !== undefined) {
+      return this.providerConversionRulesService.createRule(
+        context.workspaceId,
+        parsed.data,
+        context.userId,
+        requestKey,
+      );
+    }
     return this.providerConversionRulesService.createRule(
       context.workspaceId,
       parsed.data,
       context.userId,
     );
+  }
+
+  @Get("providers/create-receipt")
+  async lookupProviderRuleCreateReceipt(
+    @AuthToken() refreshToken: string,
+    @Query("connectionId") connectionId: string | undefined,
+    @Headers("idempotency-key") requestKey: string,
+  ) {
+    const context = await this.requireIntegrationManager(refreshToken);
+    this.requireCreateRequestKey(requestKey);
+    // Absent: a rule created without a connection (workspace scope).
+    if (
+      connectionId !== undefined &&
+      (typeof connectionId !== "string" ||
+        !connectionId.trim() ||
+        connectionId.length > 255)
+    ) {
+      throw new BadRequestException("Conexao invalida");
+    }
+    return this.providerConversionRulesService.lookupCreateReceipt(
+      context.workspaceId,
+      connectionId === undefined ? null : connectionId.trim(),
+      requestKey,
+    );
+  }
+
+  /** Scope options and capability matrix (any workspace member). */
+  @Get("providers/capabilities")
+  async getProviderRuleCapabilities(@AuthToken() refreshToken: string) {
+    await this.getCurrentWorkspaceId(refreshToken);
+    return this.providerConversionRulesService.getCapabilities();
+  }
+
+  /** Groups of identical specific rules that "Unificar" can merge. */
+  @Get("providers/unify-candidates")
+  async listProviderRuleUnifyCandidates(@AuthToken() refreshToken: string) {
+    const context = await this.requireIntegrationManager(refreshToken);
+    return this.providerConversionRulesService.listUnifyCandidates(
+      context.workspaceId,
+    );
+  }
+
+  /**
+   * Replaces the given identical rules by one "all numbers" rule (the
+   * originals are paused, history kept). Idempotent for the same rule set.
+   */
+  @Post("providers/unify")
+  @HttpCode(200)
+  async unifyProviderRules(
+    @AuthToken() refreshToken: string,
+    @Body() body: unknown,
+  ) {
+    const context = await this.requireIntegrationManager(refreshToken);
+    const parsed = providerConversionRuleUnifyInputSchema.safeParse(body);
+
+    if (!parsed.success) {
+      throw new BadRequestException(
+        hasRuleCurrencyIssue(parsed.error)
+          ? RULE_CURRENCY_INVALID_MESSAGE
+          : parsed.error.flatten(),
+      );
+    }
+
+    return this.providerConversionRulesService.unifyRules(
+      context.workspaceId,
+      parsed.data,
+      context.userId,
+    );
+  }
+
+  private requireCreateRequestKey(
+    requestKey: unknown,
+  ): asserts requestKey is string {
+    if (!providerRuleCreateRequestKeySchema.safeParse(requestKey).success) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: "Bad Request",
+        code: "provider_rule_create_key_invalid",
+        message: "Chave de tentativa invalida",
+      });
+    }
   }
 
   @Post("providers/adapt/:ruleId")
@@ -95,7 +217,11 @@ export class ConversionRulesController {
     const parsed = providerConversionRuleAdaptInputSchema.safeParse(body);
 
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(
+        hasRuleCurrencyIssue(parsed.error)
+          ? RULE_CURRENCY_INVALID_MESSAGE
+          : parsed.error.flatten(),
+      );
     }
 
     return this.providerConversionRulesService.adaptLegacyMessageRule(
@@ -116,7 +242,11 @@ export class ConversionRulesController {
     const parsed = providerConversionRuleUpdateInputSchema.safeParse(body);
 
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(
+        hasRuleCurrencyIssue(parsed.error)
+          ? RULE_CURRENCY_INVALID_MESSAGE
+          : parsed.error.flatten(),
+      );
     }
 
     return this.providerConversionRulesService.updateRule(
@@ -152,7 +282,11 @@ export class ConversionRulesController {
     const parsed = structuredCatalogTestMessageInputSchema.safeParse(body);
 
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(
+        hasRuleCurrencyIssue(parsed.error)
+          ? RULE_CURRENCY_INVALID_MESSAGE
+          : parsed.error.flatten(),
+      );
     }
 
     return this.conversionCatalogService.testMessage(
@@ -172,7 +306,11 @@ export class ConversionRulesController {
     const parsed = providerConversionRuleExecutionAuditQuerySchema.safeParse(query);
 
     if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
+      throw new BadRequestException(
+        hasRuleCurrencyIssue(parsed.error)
+          ? RULE_CURRENCY_INVALID_MESSAGE
+          : parsed.error.flatten(),
+      );
     }
 
     return this.providerConversionRulesService.listRuleExecutions(
@@ -226,7 +364,7 @@ export class ConversionRulesController {
     const parsed = conversionRuleCreateInputSchema.safeParse(body);
 
     if (!parsed.success) {
-      throw new BadRequestException("Payload invalido");
+      throw new BadRequestException(hasRuleCurrencyIssue(parsed.error) ? RULE_CURRENCY_INVALID_MESSAGE : "Payload invalido");
     }
 
     const authenticated = await this.authService.getSession(refreshToken);
@@ -252,7 +390,7 @@ export class ConversionRulesController {
     const parsed = conversionRuleUpdateInputSchema.safeParse(body);
 
     if (!parsed.success) {
-      throw new BadRequestException("Payload invalido");
+      throw new BadRequestException(hasRuleCurrencyIssue(parsed.error) ? RULE_CURRENCY_INVALID_MESSAGE : "Payload invalido");
     }
 
     const authenticated = await this.authService.getSession(refreshToken);

@@ -1,0 +1,12 @@
+{
+  "event": "lead.stage_changed",
+  "event_name": "Lead",
+  "phone": "5500000000000",
+  "external_id": "test-movement-002",
+  "ctwa_clid": "   ",
+  "source_type": "organic",
+  "lead_source": "direct",
+  "source": "unnichat",
+  "channel": "whatsapp",
+  "origin": "test-movement"
+}

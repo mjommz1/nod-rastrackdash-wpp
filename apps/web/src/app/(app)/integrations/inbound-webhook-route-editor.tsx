@@ -23,6 +23,16 @@ export type InboundWebhookRouteEditorProps = {
   canManage: boolean;
   saveAction: SaveRoutesAction;
   onUpdated: (result: InboundWebhookActionResult) => void;
+  /**
+   * Modo enviado junto das rotas (só Unnichat; para os demais provedores a
+   * API recusa o campo).
+   */
+  routingMode?: "channel_override";
+  /**
+   * Bloqueia salvar a lista vazia: rotas manuais sem rota quebram o envio;
+   * a pessoa deve voltar para “Herdar do workspace”.
+   */
+  requireRoute?: boolean;
 };
 
 export type InboundWebhookRouteDraft = {
@@ -71,6 +81,8 @@ export function InboundWebhookRouteEditor({
   canManage,
   saveAction,
   onUpdated,
+  routingMode,
+  requireRoute = false,
 }: InboundWebhookRouteEditorProps) {
   const draftSequence = useRef(0);
   const [routes, setRoutes] = useState(() =>
@@ -153,6 +165,9 @@ export function InboundWebhookRouteEditor({
     );
     const formData = new FormData();
     formData.set("channelId", channel.id);
+    if (routingMode) {
+      formData.set("routingMode", routingMode);
+    }
     formData.set(
       "routes",
       JSON.stringify(
@@ -182,7 +197,7 @@ export function InboundWebhookRouteEditor({
           <span className="micro-label">Roteamento Meta</span>
           <p className="muted">
             {canManage
-              ? "Associe uma ou mais BMs. Conta e destino sao opcionais."
+              ? "Associe uma ou mais BMs. Conta e destino são opcionais."
               : "Rotas visiveis em modo somente leitura."}
           </p>
         </div>
@@ -204,6 +219,13 @@ export function InboundWebhookRouteEditor({
       {canManage && businessOptions.length === 0 ? (
         <p className="action-note warn">
           Configure ao menos uma conexao Meta ativa antes de criar rotas.
+        </p>
+      ) : null}
+
+      {canManage && requireRoute && routes.length === 0 ? (
+        <p className="action-note warn">
+          As rotas manuais precisam de ao menos uma rota. Para não usar rotas
+          neste número, volte para “Herdar do workspace”.
         </p>
       ) : null}
 
@@ -310,7 +332,9 @@ export function InboundWebhookRouteEditor({
             className="button primary"
             type="submit"
             disabled={
-              pending || routes.some((route) => !route.metaBusinessConnectionId)
+              pending ||
+              (requireRoute && routes.length === 0) ||
+              routes.some((route) => !route.metaBusinessConnectionId)
             }
           >
             <Save size={15} aria-hidden="true" />

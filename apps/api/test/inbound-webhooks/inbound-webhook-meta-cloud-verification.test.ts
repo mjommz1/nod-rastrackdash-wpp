@@ -22,6 +22,7 @@ function fixture(secretHash: string | null) {
     {} as never,
     {} as never,
     verification,
+    {} as never,
   );
 
   return { controller, prisma };

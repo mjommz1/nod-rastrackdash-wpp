@@ -53,13 +53,14 @@ Convenção de colunas:
 | `API_PUBLIC_URL` | Sim | URL pública da sua API | `.env` da API / env do serviço | Não |
 | `API_PORT` | Sim (tem padrão `3333`) | Porta que você expõe para a API. **No Dokploy, defina `API_PORT=3000`** — o `Dockerfile` faz `EXPOSE 3000`, e essa variável precisa bater exatamente com a porta interna do container configurada no serviço (veja [`dokploy.md`](dokploy.md#6-variáveis-de-ambiente-da-api)); sem isso a API sobe na porta padrão `3333` e o Dokploy não a alcança | `.env` da API / env do serviço | Não |
 | `INBOUND_WEBHOOKS_ENABLED` e demais `INBOUND_*` | **Sim, para Gatilhos de conversão** (padrão é `false`/desligado) — veja a seção dedicada [Gatilhos de conversão](#gatilhos-de-conversão--obrigatórias-no-caminho-do-aluno) abaixo | Flags de feature do produto | `.env` da API | `INBOUND_WEBHOOK_ENCRYPTION_KEY` **sim**, as demais não |
+| `GIT_SHA` | **Não — não crie.** O commit instalado é lido automaticamente da pasta `.git` durante o build; como env de runtime, `GIT_SHA` é ignorada. Só existe como build arg de fallback para builds **sem** `.git` — veja [Versão instalada](update.md#versão-instalada) | — | — | Não |
 | `WPPTRACK_*_MS`, `WPPTRACK_EXTERNAL_SYNC_*`, `WPPTRACK_EXTERNAL_MYSQL_*` | Não (têm padrão) | Tuning de performance/timeout — mantenha o padrão salvo se tiver um motivo específico para ajustar | `.env` da API | Não |
 
 ## Gatilhos de conversão — obrigatórias no caminho do aluno
 
 ⚠️ **O padrão de todas as `INBOUND_*` é desligado (`false`/vazio).** Isso
 significa que, mesmo com UAZAPI, NOD API, WAHA, Z-API ou outro provedor já
-recebendo leads/webhooks, a tela **Gatilhos de conversão → Nova regra** não
+recebendo leads/webhooks, a tela **Conversões → Nova regra** não
 aparece — não é bug, é a feature desligada. Gatilhos de conversão valem para
 **qualquer origem** que use esse módulo (UAZAPI, NOD API, WAHA, Z-API, Umbler,
 Gupshup e demais integrações futuras). Se o aluno precisa criar regras de
@@ -100,7 +101,7 @@ Cole o valor gerado **direto no painel de env do serviço** (Dokploy) ou no
 4. `INBOUND_WEBHOOK_PRODUCTION_ENABLED=true` (obrigatório em produção/Dokploy)
 5. `API_PUBLIC_URL=https://<domínio da sua API>` (já obrigatória — ver seção Core acima)
 6. Redeploy da API
-7. Confirmar em `/settings#whatsapp-triggers` (depois de já existir uma conexão WhatsApp/origem) que **Nova regra** está disponível
+7. Confirmar em `/conversions` (depois de já existir uma conexão WhatsApp/origem) que **Nova regra** está disponível
 
 ## Banco de dados / autenticação
 
@@ -247,11 +248,77 @@ EMAIL_FROM_ADDRESS=no-reply@exemplo.com
 | `META_CONNECTION_MODES` | Sim para o MVP do aluno | Defina exatamente `manual` | `.env` da API / env do serviço | Não |
 | `META_GRAPH_API_VERSION` | Não (tem padrão) | Documentação Graph API | `.env` da API | Não |
 | `META_TOKEN_ENCRYPTION_KEY` | Sim, antes de conectar qualquer token Meta | Você gera | `.env` local / env do serviço | **Sim** |
+| `KOMMO_CRM_ENCRYPTION_KEY` | Sim, antes de criar uma conexão Kommo | Base64 canônico de 32 bytes, gerado pelo aluno | env efetiva do container da API | **Sim** |
+| `PIPEDRIVE_CRM_ENCRYPTION_KEY` | Sim, antes de criar uma conexão Pipedrive | Base64 canônico de 32 bytes, gerado pelo aluno (`openssl rand -base64 32`); **diferente** da chave do Kommo | env efetiva do container da API | **Sim** |
 | `META_WEBHOOK_VERIFY_TOKEN` | Só para o webhook de **Meta Ads** (`/webhooks/meta`) | Você define | `.env` local / env do serviço | **Sim** |
 | `WPPTRACK_META_AUTO_SYNC_*` | Não (têm padrão) | Tuning do sync automático | `.env` da API | Não |
+| `META_VIDEO_THUMBNAILS_ENABLED` | Não (padrão desligado) | Só `true` liga a busca extra de miniaturas de vídeo (`/{video}/thumbnails`). Deixe desligado ao usar o login social PalmUP: o limite de chamadas do app Meta é compartilhado | `.env` da API | Não |
 | `WPPTRACK_REPORT_TIMEZONE` | Não (tem padrão `America/Sao_Paulo`) | Seu fuso horário de relatório | `.env` da API | Não |
+| `PTAX_SYNC_ENABLED` | Não (padrão **desligado**) | Só ligue (`true`) se anuncia ou vende em USD/EUR: busca a cotação PTAX do Banco Central para os relatórios por moeda — veja [Cotação PTAX](#cotação-ptax-relatórios-por-moeda-opcional) | `.env` da API | Não |
+| `PALMUP_META_BROKER_URL` | Só para o botão **Conectar Meta (PalmUP)** — sem ela, fica só o token permanente | Fornecido pela PalmUP (já vem preenchido no `.env.example`: `https://wpptrack-api.rastrack.app`) | `.env` da API / env do serviço da API. O web **não** precisa dela | **Não** — é uma URL pública, não é App Secret |
 
-Defina `META_CONNECTION_MODES=manual` **antes** de configurar Meta e redeploy a API depois de alterar a env. No MVP do aluno não há login social Facebook nem OAuth como caminho alternativo: o token do usuário do sistema é informado por workspace na UI de **Integrações**, nunca em variável pública — veja [`meta-manual.md`](meta-manual.md).
+### `PALMUP_META_BROKER_URL` — login social Meta pela PalmUP
+
+Com esta variável preenchida, o **owner** do workspace vê o botão
+**Conectar Meta (PalmUP)** em **Integrações → Tokens, BMs e destinos** e entra
+com o Facebook pelo **app Meta da PalmUP**. Você **não** precisa criar um app
+Meta próprio nem preencher `META_APP_ID`/`META_APP_SECRET` para isso.
+
+- É só a **origem HTTPS pública** da API da PalmUP, sem caminho no final
+  (`https://wpptrack-api.rastrack.app`). Não é segredo, não é token e **não**
+  é App Secret.
+- O App Secret do app Meta da PalmUP **nunca** vai para a sua VPS, para o
+  Dokploy, para a Vercel nem para `META_APP_SECRET`. Se alguém pedir esse
+  segredo para "ativar o login social", está errado — pare e fale com o
+  suporte PalmUP.
+- O token que a Meta devolve é resgatado pela **sua API** e guardado
+  criptografado com `META_TOKEN_ENCRYPTION_KEY`, como o token colado à mão. Ele
+  nunca aparece no navegador.
+- Vazia ou ausente: ao clicar no botão, a API responde "Login social PalmUP nao
+  configurado", o botão fica apagado e o caminho do token permanente continua
+  igual. Depois de alterar, faça redeploy da API.
+
+### Kommo CRM (opcional)
+
+Se você habilitar a integração Kommo (conectada em `/integrations` → aba
+**CRM** → card **Kommo**; até a versão anterior ficava em Configurações), gere uma chave Base64 de **32 bytes** e
+preencha `KOMMO_CRM_ENCRYPTION_KEY` somente no ambiente efetivo da API. A API
+rejeita formatos inválidos e nunca devolve tokens Kommo pelas rotas de gestão
+ou auditoria. Não use uma chave no frontend nem a versione no `.env`.
+
+Exemplo de geração local (cole o resultado diretamente no seu gerenciador de
+variáveis, não no chat):
+
+```bash
+node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Leads com `ctwa_clid` e **sem ID do anúncio** agora também são enviados pelo
+Kommo, pela página + pixel verificados do workspace, quando o lead entrou por um
+número autorizado na conexão Kommo que herda o destino do workspace (igual ao
+SaaS). Esse caminho usa o envio CTWA do produto, que exige
+`INBOUND_WEBHOOKS_ENABLED=true` e `INBOUND_WEBHOOK_PRODUCTION_ENABLED=true`.
+Leads com ID do anúncio seguem pela rota do número, como antes. Sem `ctwa_clid`
+nada é enviado.
+
+### Pipedrive CRM (opcional)
+
+Para conectar o Pipedrive (`/integrations` → aba **CRM** → card **Pipedrive**),
+gere uma chave **nova** de 32 bytes — nunca reutilize a do Kommo — e preencha
+`PIPEDRIVE_CRM_ENCRYPTION_KEY` somente no ambiente efetivo da API:
+
+```bash
+openssl rand -base64 32
+```
+
+Sem a variável a API sobe normalmente e só o Pipedrive fica indisponível. Se ela
+estiver definida com formato inválido ou com o mesmo valor da
+`KOMMO_CRM_ENCRYPTION_KEY`, a API **não sobe** (erro explícito no log). Não há
+flag de liberação: o envio é decidido por regra e exige licença válida. Passo a
+passo completo (token de API, webhook v2 de negócio alterado, regras de etapa)
+em [`pipedrive.md`](pipedrive.md).
+
+Defina `META_CONNECTION_MODES=manual` **antes** de configurar Meta e redeploy a API depois de alterar a env. No MVP do aluno não há o OAuth antigo (app Meta próprio) como caminho alternativo. A credencial Meta entra por workspace na UI de **Integrações**, nunca em variável pública: pelo botão **Conectar Meta (PalmUP)** (exige `PALMUP_META_BROKER_URL`, veja acima) ou colando o token do usuário do sistema — veja [`meta-manual.md`](meta-manual.md).
 
 ### `META_APP_SECRET` e o webhook do Meta WhatsApp (Cloud API)
 
@@ -269,6 +336,47 @@ cada POST:
 Ou seja: opcional para homologar, **obrigatório antes de ativar o envio
 automático** numa conexão `meta_cloud`. É o App Secret do app Meta, não o
 token permanente do Graph de [`meta-manual.md`](meta-manual.md).
+Use o segredo do **próprio app que entrega mensagens**, nunca o da PalmUP.
+A API verifica sua presença antes da ativação e da autorização de recuperação.
+
+### Recuperação histórica Meta Cloud por owner
+
+`INBOUND_WEBHOOK_REPLAY_ENABLED` continua `false` por padrão. O operador pode
+configurar `true` somente na API para disponibilizar prévia e confirmação
+por owner; também exige `INBOUND_WEBHOOKS_ENABLED`, a chave atual
+`INBOUND_WEBHOOK_ENCRYPTION_KEY`, `META_APP_SECRET` próprio, licença e rotas
+autorizadas. Reinicie a API após ajustar suas variáveis; preserve o `.env`
+e a chave existente. A flag não envia histórico nem promove a conexão.
+`INBOUND_WEBHOOK_PRODUCTION_ENABLED` é necessária para novos envios e não
+substitui a habilitação explícita de replay. Consulte o
+[fluxo completo e estados de entrega](meta-cloud-recovery.md).
+
+### Cotação PTAX (relatórios por moeda, opcional)
+
+`PTAX_SYNC_ENABLED` fica **desligada por padrão** (variável ausente, vazia ou
+`false`). Os relatórios mostram o gasto de cada conta de anúncio na moeda dela
+e nunca somam moedas diferentes; a cotação só serve para converter a receita
+de uma venda feita em outra moeda.
+
+- **Desligada:** a API não faz nenhuma chamada externa. Uma venda em outra
+  moeda aparece na moeda original, fora da receita da conta, e o ROAS dessa
+  parte fica "sem cotação". Quem tem tudo em real não precisa ligar.
+- **Ligada** (`PTAX_SYNC_ENABLED=true`, só na API): a cada 6 horas (a primeira
+  1 a 2 minutos depois de a API subir) a API busca a PTAX de USD e EUR no Banco
+  Central e guarda na tabela `ExchangeRate`; dias que faltam são buscados na
+  hora em que um relatório precisa, em segundo plano (o relatório espera no
+  máximo cerca de 1,5 s). A receita atribuída a um anúncio é
+  convertida para a moeda da conta pela cotação do dia da venda (horário de
+  Brasília); sem boletim nesse dia (fim de semana, feriado), vale a do último
+  dia útil anterior. Venda sem conta de anúncio atribuída fica na moeda
+  original.
+- **Rede:** ligada, a API precisa de saída HTTPS para `olinda.bcb.gov.br`
+  (API pública do Banco Central, sem chave nem cadastro). Se o Banco Central
+  estiver fora ou bloqueado, vale a cotação guardada de até 10 dias antes da
+  venda ou "sem cotação":
+  nenhum relatório quebra e nada é enviado à Meta por causa disso.
+- Não confunda com `WPPTRACK_PTAX_SYNC_ENABLED` (nome usado no SaaS): aqui ela
+  não tem efeito. Reinicie a API depois de mudar a variável.
 
 ## URLs, cookie e primeiro administrador
 
@@ -296,12 +404,12 @@ Não use `https://`, barra final nem o hostname completo da API em `AUTH_COOKIE_
 
 ⚠️ **Estas variáveis deixaram de ser o caminho principal.** As conexões de
 WhatsApp são criadas **por workspace** na própria UI (`/integrations` →
-painel "Provedores e receivers"), com as credenciais digitadas ali e
+aba **WhatsApp** → card do provedor), com as credenciais digitadas ali e
 guardadas criptografadas. As envs abaixo continuam sendo lidas como
 **padrão do deployment**: o adapter usa a credencial salva na conexão e só
 cai na env quando aquele campo não foi preenchido na conexão. Elas também
-alimentam o card de status global "Instância Uazapi (BYO)" no rodapé de
-`/integrations`.
+alimentam o bloco de status global "Instância Uazapi (BYO)" dentro do card
+**Uazapi** (aba **WhatsApp**) de `/integrations`.
 
 Umbler Talk, Gupshup, Data Crazy e Meta WhatsApp (Cloud API) **não têm
 variável de ambiente específica do provedor** — são conexões de webhook de entrada criadas em
@@ -419,6 +527,8 @@ INBOUND_WEBHOOK_PRODUCTION_ENABLED=true
 
 # ---- Meta ----
 META_CONNECTION_MODES=manual
+# Botão "Conectar Meta (PalmUP)". URL pública, NÃO é segredo nem App Secret.
+PALMUP_META_BROKER_URL=[já vem preenchido no .env.example — https://wpptrack-api.rastrack.app]
 META_APP_ID=[PREENCHER — só se usar App próprio]
 # App Secret do app Meta. Obrigatório antes de ativar o envio automático
 # em uma conexão Meta WhatsApp (Cloud API).

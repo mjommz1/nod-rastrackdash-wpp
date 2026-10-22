@@ -143,38 +143,41 @@ export class MetaAdDestinationRoutingService {
       manualAssignments.map((assignment) => assignment.adId),
     );
 
-    const automaticAssignments =
-      destinations.length > 1
-        ? ads.flatMap((ad) => {
-            if (manuallyAssignedAdIds.has(ad.adId)) {
-              return [];
-            }
+    const automaticAssignments = ads.flatMap((ad) => {
+      if (manuallyAssignedAdIds.has(ad.adId)) {
+        return [];
+      }
 
-            const candidates = this.destinationCandidates(
+      // A sole configured destination is already an unambiguous account-level
+      // decision. Page/pixel matching remains required whenever the account
+      // has multiple destinations.
+      const candidates =
+        destinations.length === 1
+          ? destinations
+          : this.destinationCandidates(
               destinations,
               ad.detectedPixelIds,
               ad.detectedPageIds,
             );
 
-            if (candidates.length !== 1) {
-              return [];
-            }
+      if (candidates.length !== 1) {
+        return [];
+      }
 
-            const destination = candidates[0];
+      const destination = candidates[0];
 
-            return [
-              {
-                workspaceId: input.workspaceId,
-                adId: ad.adId,
-                reportingAccountId: input.reportingAccountId,
-                conversionDestinationId: destination.id,
-                source: "automatic" as const,
-                detectedPixelId: destination.pixelId,
-                detectedPageId: destination.pageId,
-              },
-            ];
-          })
-        : [];
+      return [
+        {
+          workspaceId: input.workspaceId,
+          adId: ad.adId,
+          reportingAccountId: input.reportingAccountId,
+          conversionDestinationId: destination.id,
+          source: "automatic" as const,
+          detectedPixelId: destination.pixelId,
+          detectedPageId: destination.pageId,
+        },
+      ];
+    });
 
     await this.prisma.$transaction(async (transaction) => {
       await transaction.metaAdDestinationAssignment.deleteMany({

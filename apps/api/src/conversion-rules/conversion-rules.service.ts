@@ -1,10 +1,11 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { ConflictException, Inject, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import type {
   ConversionRuleCreateInputDto,
   ConversionRuleDto,
   ConversionRuleUpdateInputDto,
   ConversionTriggerEvaluationInputDto,
+  LegacyConversionRuleDto,
 } from "@wpptrack/shared";
 import { PrismaService } from "../common/prisma/prisma.service";
 
@@ -38,6 +39,40 @@ export class ConversionRulesService {
     });
 
     return rules.map((rule) => this.toDto(rule));
+  }
+
+  /**
+   * "Regras antigas" for the Conversions screen: keyword / WhatsApp label
+   * rules without a provider configuration. Pausing and editing the value
+   * keep using PATCH /conversion-rules/:id; "conectar a numeros" uses the
+   * existing adapt endpoint, which only accepts keyword Purchase rules with a
+   * value (adaptable = true).
+   */
+  async listLegacyRules(workspaceId: string): Promise<LegacyConversionRuleDto[]> {
+    const rules = await this.prisma.conversionRule.findMany({
+      where: {
+        workspaceId,
+        providerConfig: { is: null },
+        triggerType: { in: ["keyword", "whatsapp_label"] },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return rules.map((rule) => {
+      const adaptBlockedReason =
+        rule.triggerType !== "keyword" || rule.eventName !== "Purchase"
+          ? ("not_keyword_purchase" as const)
+          : // Moeda nula = herdar a "Moeda das conversões" do workspace.
+            !rule.defaultValueCents || rule.defaultValueCents <= 0
+            ? ("missing_value" as const)
+            : null;
+      return {
+        ...this.toDto(rule),
+        kind: "legacy" as const,
+        adaptable: adaptBlockedReason === null,
+        adaptBlockedReason,
+      };
+    });
   }
 
   async createRule(
@@ -81,6 +116,18 @@ export class ConversionRulesService {
     input: ConversionRuleUpdateInputDto,
     actorUserId?: string | null,
   ): Promise<ConversionRuleDto> {
+    // Rules with a provider configuration (Conversoes) keep their own
+    // invariants (scope, "Unificar" link, production gates): they are edited
+    // only through /conversion-rules/providers/:id.
+    const providerBacked = await this.prisma.conversionRule.findFirst({
+      where: { id: ruleId, workspaceId, providerConfig: { isNot: null } },
+      select: { id: true },
+    });
+    if (providerBacked) {
+      throw new ConflictException(
+        "Esta regra e gerenciada em Conversoes; edite-a pela regra do provedor",
+      );
+    }
     const rule = await this.prisma.conversionRule.update({
       where: {
         id: ruleId,

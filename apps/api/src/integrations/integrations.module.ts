@@ -12,6 +12,8 @@ import { MetaAssetsService } from "./meta/meta-assets.service";
 import { MetaConnectionResolverService } from "./meta/meta-connection-resolver.service";
 import { MetaConnectionsService } from "./meta/meta-connections.service";
 import { MetaManualConnectionsService } from "./meta/meta-manual-connections.service";
+import { MetaPalmupConnectService } from "./meta/meta-palmup-connect.service";
+import { MetaPalmupPairingStore } from "./meta/meta-palmup-pairing.store";
 import { MetaTokenEncryptionService } from "./meta/meta-token-encryption.service";
 import { WhatsappProvidersModule } from "./whatsapp-providers/whatsapp-providers.module";
 
@@ -37,6 +39,8 @@ export { INTEGRATION_ENV } from "./integration.types";
     MetaTokenEncryptionService,
     MetaConnectionsService,
     MetaManualConnectionsService,
+    MetaPalmupConnectService,
+    MetaPalmupPairingStore,
     IntegrationsService,
   ],
   controllers: [IntegrationsController],

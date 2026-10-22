@@ -129,14 +129,24 @@ function JsonSnapshot({
   );
 }
 
-function RetrySubmitButton({ compact = false }: { compact?: boolean }) {
+function RetrySubmitButton({
+  blocked,
+  compact = false,
+}: {
+  blocked: boolean;
+  compact?: boolean;
+}) {
   const { pending } = useFormStatus();
 
   return (
     <button
       className={`button audit-retry-button${compact ? " ghost" : " primary"}`}
       disabled={pending}
-      title="Reenviar falha de comunicacao com a Meta"
+      title={
+        blocked
+          ? "Tentar enviar de novo com a conexao Meta atual"
+          : "Reenviar falha de comunicacao com a Meta"
+      }
       type="submit"
     >
       <RefreshCw aria-hidden="true" size={16} />
@@ -147,13 +157,17 @@ function RetrySubmitButton({ compact = false }: { compact?: boolean }) {
 
 export function EventAuditDetails({
   canRetry,
+  deliveryState,
   eventId,
   eventLabel,
 }: {
   canRetry: boolean;
+  deliveryState?: ConversionAuditDeliveryStateDto;
   eventId: string;
   eventLabel: string;
 }) {
+  // Bloqueado por configuracao nao e falha de rede: o reenvio usa a conexao atual.
+  const blocked = deliveryState === "blocked";
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [retryAvailable, setRetryAvailable] = useState(canRetry);
   const [activeTab, setActiveTab] = useState<AuditTab>("summary");
@@ -232,7 +246,7 @@ export function EventAuditDetails({
             onSuccess={handleRetrySuccess}
           >
             <input name="eventId" type="hidden" value={eventId} />
-            <RetrySubmitButton compact />
+            <RetrySubmitButton blocked={blocked} compact />
           </BackofficeActionForm>
         ) : null}
       </div>
@@ -339,19 +353,32 @@ export function EventAuditDetails({
 
                     {detail.canRetry ? (
                       <div className="event-audit-retry">
-                        <span>
-                          <strong>Falha transitoria de comunicacao</strong>
-                          <small>
-                            Uma nova tentativa reutiliza o mesmo identificador
-                            do evento.
-                          </small>
-                        </span>
+                        {detail.deliveryState === "blocked" ? (
+                          <span>
+                            <strong>Bloqueado pela conexao com a Meta</strong>
+                            <small>
+                              Se a conexao ja foi ajustada, uma nova tentativa
+                              usa a configuracao atual e o mesmo identificador
+                              do evento.
+                            </small>
+                          </span>
+                        ) : (
+                          <span>
+                            <strong>Falha transitoria de comunicacao</strong>
+                            <small>
+                              Uma nova tentativa reutiliza o mesmo
+                              identificador do evento.
+                            </small>
+                          </span>
+                        )}
                         <BackofficeActionForm
                           action={retryMetaEventAction}
                           onSuccess={handleRetrySuccess}
                         >
                           <input name="eventId" type="hidden" value={eventId} />
-                          <RetrySubmitButton />
+                          <RetrySubmitButton
+                            blocked={detail.deliveryState === "blocked"}
+                          />
                         </BackofficeActionForm>
                       </div>
                     ) : null}

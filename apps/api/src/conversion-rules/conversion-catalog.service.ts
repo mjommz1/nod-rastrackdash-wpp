@@ -65,7 +65,11 @@ export class ConversionCatalogService {
         id: providerRuleId,
         workspaceId,
         removedAt: null,
-        connection: { removedAt: null },
+        // Unbound (workspace-scope) rules have no connection to lose.
+        OR: [
+          { connectionId: null },
+          { connection: { is: { removedAt: null } } },
+        ],
       },
       include: catalogRuleInclude,
     });

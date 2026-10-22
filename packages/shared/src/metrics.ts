@@ -9,7 +9,7 @@ export const funnelMetricKeys = [
 export type FunnelMetricKey = (typeof funnelMetricKeys)[number];
 
 export const funnelMetricLabels: Record<FunnelMetricKey, string> = {
-  real_conversations: "Conversas reais iniciadas",
+  real_conversations: "Leads novos",
   qualified_lead: "Lead qualificado",
   purchase: "Compras",
   first_purchase: "Primeira compra",

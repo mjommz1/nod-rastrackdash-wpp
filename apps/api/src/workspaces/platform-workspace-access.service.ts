@@ -31,6 +31,7 @@ import {
   withWorkspaceUniqueRetry,
 } from "../common/prisma/workspace-write-concurrency";
 import { acquirePlatformRoleLock } from "../common/prisma/platform-role-concurrency";
+import { lockKommoDispatch } from "../conversion-events/kommo-dispatch-coordination";
 import { EmailQueueService } from "../email/email-queue.service";
 import type { PlatformAdminUser } from "../auth/platform-admin.service";
 import { RUNTIME_ENV, type RuntimeEnv } from "../common/runtime/runtime.module";
@@ -380,6 +381,17 @@ export class PlatformWorkspaceAccessService {
     }
 
     const deleted = await this.prisma.$transaction(async (tx) => {
+      // Share the Kommo sender's transaction lock and ordering. This prevents a
+      // queued sender from entering its provider-start critical section while
+      // this transaction removes its connection and durable publication fence.
+      await lockKommoDispatch(tx, workspaceId);
+      // Sender takes the same advisory lock before its connection row lock.
+      // Lock every workspace connection here before any delete mutation so the
+      // two consumers keep one lock ordering even for a multi-account tenant.
+      await tx.$queryRaw`SELECT "id" FROM "KommoConnection" WHERE "workspaceId" = ${workspaceId} FOR UPDATE`;
+      // The Pipedrive sender/worker take the same advisory lock and then the
+      // connection row: keep that order before deleting its rows.
+      await tx.$queryRaw`SELECT "id" FROM "PipedriveConnection" WHERE "workspaceId" = ${workspaceId} FOR UPDATE`;
       const workspace = await tx.workspace.findUnique({
         where: { id: workspaceId },
         select: { id: true, slug: true },
@@ -462,6 +474,9 @@ export class PlatformWorkspaceAccessService {
     await tx.purchaseValueAdjustment.deleteMany({ where });
     await tx.purchaseReviewItem.deleteMany({ where });
     await tx.purchaseReview.deleteMany({ where });
+    // Sale claims reference the winning execution and its conversion
+    // (Restrict): they go before both.
+    await tx.providerPurchaseClaim.deleteMany({ where });
     await tx.providerConversionRuleExecution.deleteMany({ where });
     // ProviderConversionDecisionAudit has a Restrict self-reference. Clear it
     // first so every version chain can be removed in this transaction.
@@ -481,14 +496,48 @@ export class PlatformWorkspaceAccessService {
     await tx.conversionCatalogVariant.deleteMany({ where });
     await tx.conversionCatalogAttribute.deleteMany({ where });
     await tx.conversionCatalog.deleteMany({ where });
+    // Create receipts reference the rule (Restrict), and "Unificar" links a
+    // rule to another rule of the same workspace (Restrict self-reference):
+    // clear both before the rules themselves.
+    await tx.providerRuleCreateClaim.deleteMany({ where });
+    await tx.providerConversionRuleConfig.updateMany({
+      where: { workspaceId, unifiedIntoProviderRuleId: { not: null } },
+      data: { unifiedIntoProviderRuleId: null },
+    });
     await tx.providerConversionRuleConfig.deleteMany({ where });
     await tx.conversionRule.deleteMany({ where });
+
+    // Every Kommo relation is Restrict. The connection's direct children must
+    // precede it, and the semantic fence must be removed only as part of this
+    // confirmed full-workspace destruction. Although publicationIntent stores
+    // its route/destination/log references as JSON/scalars (not DB FKs), keep
+    // it ahead of those parents too so no partial Kommo intent survives.
+    await tx.kommoConversionDedupe.deleteMany({ where });
+    await tx.kommoWebhookEvent.deleteMany({ where });
+    await tx.kommoConversionRule.deleteMany({ where });
+    await tx.kommoPipelineCatalog.deleteMany({ where });
+    await tx.kommoConnection.deleteMany({ where });
+
+    // Pipedrive relations are Restrict as well (Workspace, Lead and
+    // ConversionEventLog parents): the ledger and the inbox go first, then the
+    // rules, the stage catalog, the pipeline catalog and the connection.
+    await tx.pipedriveConversionDedupe.deleteMany({ where });
+    await tx.pipedriveWebhookEvent.deleteMany({ where });
+    await tx.pipedriveConversionRule.deleteMany({ where });
+    await tx.pipedriveStageCatalog.deleteMany({ where });
+    await tx.pipedrivePipelineCatalog.deleteMany({ where });
+    await tx.pipedriveConnection.deleteMany({ where });
 
     await tx.inboundWebhookReplayItem.deleteMany({ where });
     await tx.inboundWebhookReplayBatch.deleteMany({ where });
     await tx.inboundWebhookProductionItem.deleteMany({ where });
     await tx.inboundWebhookEvent.deleteMany({ where });
     await tx.inboundWebhookDelivery.deleteMany({ where });
+    // Fase 5.3: receipts reference their URL (Restrict); both reference the
+    // workspace (Restrict). Deliveries point to the URL with SetNull, but
+    // they are already gone here.
+    await tx.integrationEndpointEvent.deleteMany({ where });
+    await tx.integrationEndpoint.deleteMany({ where });
     await tx.inboundWebhookChannelRoute.deleteMany({ where });
     await tx.inboundWebhookChannel.deleteMany({ where });
     await tx.inboundWebhookConnection.deleteMany({ where });

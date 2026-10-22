@@ -36,6 +36,11 @@ import { ConversionEventsQueueService } from "../common/queue/conversion-events-
 import { DiagnosticsQueueService } from "../common/queue/diagnostics-queue.service";
 import { createBullJobId } from "../common/queue/job-id";
 import { CONVERSION_EVENTS_QUEUE } from "../common/queue/queue.constants";
+import {
+  BLOCKED_CONVERSION_RETRY_LIMIT,
+  canRetryConversionEvent,
+  isConfigurationBlockedConversionEvent
+} from "../conversion-events/conversion-event-retry";
 
 const sensitiveKeyPattern =
   /(authorization|cookie|secret|token|api.?key|refresh|password)/i;
@@ -177,6 +182,7 @@ export type ConversionEventRetryContext = {
   actorUserId?: string | null;
   actorType?: string;
   transientOnly?: boolean;
+  allowConfigurationBlocked?: boolean;
   requesterLabel?: string;
 };
 
@@ -1351,6 +1357,74 @@ export class DiagnosticsService {
     input: DiagnosticRetryInputDto,
     context: ConversionEventRetryContext = {}
   ): Promise<DiagnosticRetryResultDto> {
+    return this.performConversionEventRetry(id, input, context);
+  }
+
+  async retryBlockedConversionEvents(
+    eventIds: string[],
+    input: DiagnosticRetryInputDto,
+    context: ConversionEventRetryContext & { workspaceId: string }
+  ): Promise<{
+    claimed: number;
+    enqueued: number;
+    skipped: number;
+    failed: number;
+  }> {
+    const result = { claimed: 0, enqueued: 0, skipped: 0, failed: 0 };
+
+    for (const id of [...new Set(eventIds)].slice(
+      0,
+      BLOCKED_CONVERSION_RETRY_LIMIT
+    )) {
+      let claimed = false;
+      try {
+        await this.performConversionEventRetry(
+          id,
+          input,
+          {
+            ...context,
+            transientOnly: true,
+            allowConfigurationBlocked: true
+          },
+          {
+            configurationBlockedOnly: true,
+            // Count completed steps even if queueing or audit persistence later fails.
+            onClaimed: () => {
+              claimed = true;
+              result.claimed += 1;
+            },
+            onEnqueued: () => {
+              result.enqueued += 1;
+            }
+          }
+        );
+      } catch (error) {
+        if (
+          !claimed &&
+          (error instanceof NotFoundException ||
+            error instanceof BadRequestException ||
+            error instanceof ConflictException)
+        ) {
+          result.skipped += 1;
+        } else {
+          result.failed += 1;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  private async performConversionEventRetry(
+    id: string,
+    input: DiagnosticRetryInputDto,
+    context: ConversionEventRetryContext,
+    progress: {
+      configurationBlockedOnly?: boolean;
+      onClaimed?: () => void;
+      onEnqueued?: () => void;
+    } = {}
+  ): Promise<DiagnosticRetryResultDto> {
     const conversionEvent = (await this.prisma.conversionEventLog.findUnique({
       where: { id }
     })) as ConversionEventLogRecord | null;
@@ -1364,12 +1438,23 @@ export class DiagnosticsService {
     }
 
     if (
+      progress.configurationBlockedOnly &&
+      !isConfigurationBlockedConversionEvent(conversionEvent)
+    ) {
+      throw new BadRequestException("Evento nao esta bloqueado por configuracao");
+    }
+
+    if (
       context.transientOnly === true &&
-      (conversionEvent.status !== "error" ||
-        conversionEvent.errorCode !== "MetaCapiNetworkError")
+      !(context.allowConfigurationBlocked
+        ? canRetryConversionEvent(conversionEvent)
+        : conversionEvent.status === "error" &&
+          conversionEvent.errorCode === "MetaCapiNetworkError")
     ) {
       throw new BadRequestException(
-        "Somente falhas transitorias de comunicacao podem ser reenviadas"
+        context.allowConfigurationBlocked
+          ? "Somente falhas transitorias ou bloqueios de configuracao podem ser reenviados"
+          : "Somente falhas transitorias de comunicacao podem ser reenviadas"
       );
     }
 
@@ -1421,6 +1506,7 @@ export class DiagnosticsService {
         "O evento ja foi alterado ou esta aguardando reenvio"
       );
     }
+    progress.onClaimed?.();
 
     let queued: Awaited<ReturnType<ConversionEventsQueueService["retrySend"]>>;
 
@@ -1429,6 +1515,7 @@ export class DiagnosticsService {
         conversionEvent.id,
         conversionEvent.workspaceId
       );
+      progress.onEnqueued?.();
     } catch (error) {
       await this.prisma.conversionEventLog.updateMany({
         where: {

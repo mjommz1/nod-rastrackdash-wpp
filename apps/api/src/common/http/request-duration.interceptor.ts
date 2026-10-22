@@ -15,6 +15,9 @@ type HttpRequest = {
 };
 
 export function sanitizeRequestPath(path: string): string {
+  // The Pipedrive webhook URL carries its secret as ?token=; drop the query.
+  const pathname = path.split(/[?#]/u, 1)[0] ?? path;
+  if (/^\/webhooks\/pipedrive(?:\/|$)/i.test(pathname)) return pathname;
   return path.replace(
     /([?&]token=)[^&#\s"]*/gi,
     "$1[REDACTED]",

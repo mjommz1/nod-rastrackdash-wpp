@@ -32,6 +32,10 @@ import { AuthToken } from "../auth/auth-user.decorator";
 import { AuthService } from "../auth/auth.service";
 import { WorkspacesService } from "../workspaces/workspaces.service";
 import { IntegrationsService } from "./integrations.service";
+import {
+  MetaPalmupConnectService,
+  metaPalmupConnectCompleteSchema,
+} from "./meta/meta-palmup-connect.service";
 
 
 @Controller("integrations")
@@ -43,6 +47,8 @@ export class IntegrationsController {
     private readonly authService: AuthService,
     @Inject(WorkspacesService)
     private readonly workspacesService: WorkspacesService,
+    @Inject(MetaPalmupConnectService)
+    private readonly metaPalmupConnectService: MetaPalmupConnectService,
   ) {}
 
   @Get("health")
@@ -140,6 +146,40 @@ export class IntegrationsController {
     return this.integrationsService.createMetaManualCredential(
       workspace.id,
       input,
+      authenticated.user.id,
+    );
+  }
+
+  @Post("meta/manual/palmup-connect/start")
+  async startMetaPalmupConnect(@AuthToken() refreshToken: string) {
+    const authenticated = await this.authService.getSession(refreshToken);
+    const workspace = this.workspacesService.getCurrentWorkspace(authenticated);
+    if (
+      workspace.role !== "owner" ||
+      !workspace.permissions.canManageIntegrations
+    ) {
+      throw new ForbiddenException("Sem permissao para gerenciar integracoes");
+    }
+    return this.metaPalmupConnectService.start(workspace.id);
+  }
+
+  @Post("meta/manual/palmup-connect/complete")
+  async completeMetaPalmupConnect(
+    @AuthToken() refreshToken: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    const authenticated = await this.authService.getSession(refreshToken);
+    const workspace = this.workspacesService.getCurrentWorkspace(authenticated);
+    if (
+      workspace.role !== "owner" ||
+      !workspace.permissions.canManageIntegrations
+    ) {
+      throw new ForbiddenException("Sem permissao para gerenciar integracoes");
+    }
+    const input = this.parseBody(metaPalmupConnectCompleteSchema.safeParse(body));
+    return this.metaPalmupConnectService.complete(
+      workspace.id,
+      input.pairingId,
       authenticated.user.id,
     );
   }

@@ -118,6 +118,25 @@ export type MetaAdSetAsset = {
   lifetimeBudgetCents: number | null;
 };
 
+/**
+ * How an ad's previewUrl was obtained in this listAds call:
+ * - reused: taken from the caller-supplied reusable map, no Graph request
+ * - fetched: Graph returned the creative and a preview URL
+ * - absent: Graph returned the creative successfully but it has no media
+ * - failed: the creative (or its video thumbnails) could not be read; any
+ *   previewUrl is only a lower-quality fallback from the creative itself
+ * - skipped: the caller asked not to request this creative now (it recently
+ *   came back without a usable preview); previewUrl is null, no Graph request
+ * - no_creative: the ad has no creative id
+ */
+export type MetaAdPreviewSource =
+  | "reused"
+  | "fetched"
+  | "absent"
+  | "failed"
+  | "skipped"
+  | "no_creative";
+
 export type MetaAdAsset = {
   id: string;
   name: string;
@@ -128,9 +147,56 @@ export type MetaAdAsset = {
   creativeId: string | null;
   thumbnailUrl: string | null;
   previewUrl: string | null;
+  previewSource: MetaAdPreviewSource;
   callToActionType: string | null;
   detectedPixelIds: string[];
   detectedPageIds: string[];
+};
+
+/**
+ * Why a batched Graph sub-request produced no usable item. Only an HTTP 429 or
+ * a documented Graph throttling code counts as rateLimited; a null/omitted
+ * item is missingItem because Graph does not say why it was dropped.
+ */
+export type MetaGraphBatchFailureReason =
+  | "rateLimited"
+  | "serverError"
+  | "clientError"
+  | "missingItem"
+  | "notAttempted"
+  | "transportError"
+  | "unexpected";
+
+export type MetaPreviewEnrichmentStats = {
+  distinctCreatives: number;
+  creativesReused: number;
+  creativesSkipped: number;
+  creativesRequested: number;
+  creativesSucceeded: number;
+  creativesFailed: number;
+  creativesWithoutPreview: number;
+  creativeBatchRequests: number;
+  videosRequested: number;
+  videosSucceeded: number;
+  videosFailed: number;
+  videoBatchRequests: number;
+  failureReasons: Record<MetaGraphBatchFailureReason, number>;
+};
+
+export type MetaListAdsInput = {
+  accessToken: string;
+  adAccountId: string;
+  /**
+   * creativeId -> preview URL the caller already validated as reusable. Those
+   * creatives are not requested from Graph. Callers must scope this map to
+   * the same workspace and ad account.
+   */
+  reusablePreviewUrls?: ReadonlyMap<string, string>;
+  /**
+   * Creatives not to request from Graph in this call (e.g. they recently came
+   * back absent/failed). They are reported with previewSource "skipped".
+   */
+  skipPreviewCreativeIds?: ReadonlySet<string>;
 };
 
 export type MetaCampaignInsight = {
@@ -248,6 +314,24 @@ type MetaGraphBatchItem = {
   code?: unknown;
   body?: unknown;
 };
+
+type MetaGraphBatchResult<T> = {
+  results: Map<string, T>;
+  failures: Map<string, MetaGraphBatchFailureReason>;
+  batchRequests: number;
+  /** A whole batch request failed and the remaining chunks were skipped. */
+  aborted: boolean;
+};
+
+type MetaCreativePreview = {
+  status: "fetched" | "absent" | "failed";
+  url: string | null;
+};
+
+// HTTP 429 plus Graph throttling codes (app, user, page, custom, ads BUC).
+const META_RATE_LIMIT_CODES = new Set([4, 17, 32, 613]);
+const META_ADS_RATE_LIMIT_CODE_RANGE = [80000, 80014] as const;
+const META_GRAPH_BATCH_SIZE = 50;
 
 type MetaInsightGraphNode = {
   campaign_id?: unknown;
@@ -791,10 +875,14 @@ export class MetaAdapter implements IntegrationAdapter {
       );
   }
 
-  async listAds(input: {
-    accessToken: string;
-    adAccountId: string;
-  }): Promise<MetaAdAsset[]> {
+  async listAds(input: MetaListAdsInput): Promise<MetaAdAsset[]> {
+    return (await this.listAdsWithPreviewStats(input)).ads;
+  }
+
+  async listAdsWithPreviewStats(input: MetaListAdsInput): Promise<{
+    ads: MetaAdAsset[];
+    previewStats: MetaPreviewEnrichmentStats;
+  }> {
     let response: MetaAdGraphNode[];
 
     try {
@@ -830,25 +918,67 @@ export class MetaAdapter implements IntegrationAdapter {
           .filter((id): id is string => Boolean(id)),
       ),
     ];
-    let previewUrls = new Map<string, string>();
+    const reusedPreviewUrls = new Map<string, string>();
+    const skippedCreativeIds = new Set<string>();
+    const creativeIdsToRequest: string[] = [];
+
+    for (const creativeId of creativeIds) {
+      const reusableUrl = this.asHttpUrl(
+        input.reusablePreviewUrls?.get(creativeId),
+      );
+
+      if (reusableUrl) {
+        reusedPreviewUrls.set(creativeId, reusableUrl);
+      } else if (input.skipPreviewCreativeIds?.has(creativeId)) {
+        skippedCreativeIds.add(creativeId);
+      } else {
+        creativeIdsToRequest.push(creativeId);
+      }
+    }
+
+    const previewStats = this.emptyPreviewStats();
+    previewStats.distinctCreatives = creativeIds.length;
+    previewStats.creativesReused = reusedPreviewUrls.size;
+    previewStats.creativesSkipped = skippedCreativeIds.size;
+    previewStats.creativesRequested = creativeIdsToRequest.length;
+    let previews: Map<string, MetaCreativePreview>;
 
     try {
-      previewUrls = await this.getCreativePreviewUrls(
-        creativeIds,
+      previews = await this.getCreativePreviews(
+        creativeIdsToRequest,
         input.accessToken,
+        previewStats,
       );
-    } catch (error) {
+    } catch {
+      // Media enrichment must never abort structure/metrics sync.
+      previews = new Map(
+        creativeIdsToRequest.map((creativeId) => [
+          creativeId,
+          { status: "failed", url: null },
+        ]),
+      );
+      previewStats.creativesSucceeded = 0;
+      previewStats.creativesWithoutPreview = 0;
+      previewStats.creativesFailed = creativeIdsToRequest.length;
+      previewStats.failureReasons.unexpected += creativeIdsToRequest.length;
       console.warn("[wpptrack:meta-graph] creative preview enrichment failed", {
-        creativeCount: creativeIds.length,
-        message:
-          error instanceof Error ? error.message : "Meta Graph batch failed",
+        creativeCount: creativeIdsToRequest.length,
       });
     }
 
-    return response
+    const ads = response
       .map((item) => {
         const creativeId = this.asString(item.creative?.id);
         const destinationHints = this.adDestinationHints(item);
+        const reusedUrl = creativeId ? reusedPreviewUrls.get(creativeId) : null;
+        const preview = creativeId ? previews.get(creativeId) : null;
+        const previewSource: MetaAdPreviewSource = !creativeId
+          ? "no_creative"
+          : reusedUrl
+            ? "reused"
+            : skippedCreativeIds.has(creativeId)
+              ? "skipped"
+              : (preview?.status ?? "failed");
 
         return {
           id: this.asString(item.id),
@@ -859,7 +989,8 @@ export class MetaAdapter implements IntegrationAdapter {
           effectiveStatus: this.asString(item.effective_status),
           creativeId,
           thumbnailUrl: this.asHttpUrl(item.creative?.thumbnail_url),
-          previewUrl: creativeId ? (previewUrls.get(creativeId) ?? null) : null,
+          previewUrl: reusedUrl ?? preview?.url ?? null,
+          previewSource,
           callToActionType: this.asString(item.creative?.call_to_action_type),
           detectedPixelIds: destinationHints.pixelIds,
           detectedPageIds: destinationHints.pageIds,
@@ -868,6 +999,8 @@ export class MetaAdapter implements IntegrationAdapter {
       .filter((item): item is MetaAdAsset =>
         Boolean(item.id && item.name && item.campaignId && item.adSetId),
       );
+
+    return { ads, previewStats };
   }
 
   async updateEntityStatus(input: {
@@ -1362,10 +1495,42 @@ export class MetaAdapter implements IntegrationAdapter {
     return payload as T;
   }
 
-  private async getCreativePreviewUrls(
+  /** Opt-in only: exact string "true" in META_VIDEO_THUMBNAILS_ENABLED. */
+  private videoThumbnailsEnabled(): boolean {
+    return this.env.META_VIDEO_THUMBNAILS_ENABLED?.trim() === "true";
+  }
+
+  private emptyPreviewStats(): MetaPreviewEnrichmentStats {
+    return {
+      distinctCreatives: 0,
+      creativesReused: 0,
+      creativesSkipped: 0,
+      creativesRequested: 0,
+      creativesSucceeded: 0,
+      creativesFailed: 0,
+      creativesWithoutPreview: 0,
+      creativeBatchRequests: 0,
+      videosRequested: 0,
+      videosSucceeded: 0,
+      videosFailed: 0,
+      videoBatchRequests: 0,
+      failureReasons: {
+        rateLimited: 0,
+        serverError: 0,
+        clientError: 0,
+        missingItem: 0,
+        notAttempted: 0,
+        transportError: 0,
+        unexpected: 0,
+      },
+    };
+  }
+
+  private async getCreativePreviews(
     creativeIds: string[],
     accessToken: string,
-  ): Promise<Map<string, string>> {
+    stats: MetaPreviewEnrichmentStats,
+  ): Promise<Map<string, MetaCreativePreview>> {
     if (creativeIds.length === 0) {
       return new Map();
     }
@@ -1394,33 +1559,63 @@ export class MetaAdapter implements IntegrationAdapter {
       accessToken,
       "/creative-previews",
     );
-    const videoIds = [
-      ...new Set(
-        [...creatives.values()]
-          .map((creative) => this.creativeVideoId(creative))
-          .filter((videoId): videoId is string => Boolean(videoId)),
-      ),
-    ];
-    const videoThumbnailPayloads = await this.getGraphBatch<
-      MetaGraphListResponse<MetaVideoThumbnailGraphNode>
-    >(
-      videoIds.map((videoId) => {
-        const params = new URLSearchParams({
-          fields: "uri,width,height,is_preferred",
-          limit: "100",
-        });
+    stats.creativeBatchRequests = creatives.batchRequests;
+    stats.creativesSucceeded = creatives.results.size;
+    stats.creativesFailed = creatives.failures.size;
+    this.countBatchFailures(stats, creatives.failures);
 
-        return {
-          key: videoId,
-          relativeUrl: `${videoId}/thumbnails?${params.toString()}`,
-        };
-      }),
-      accessToken,
-      "/video-thumbnails",
-    );
+    // GET /{video}/thumbnails costs one extra Graph call per video creative
+    // and is disabled by default: installations share the app-level rate
+    // limit of the PalmUP Meta app. The creative's own image_url /
+    // thumbnail_url (already in this batch) is used as the preview instead.
+    const videoIds = this.videoThumbnailsEnabled()
+      ? [
+          ...new Set(
+            [...creatives.results.values()]
+              .map((creative) => this.creativeVideoId(creative))
+              .filter((videoId): videoId is string => Boolean(videoId)),
+          ),
+        ]
+      : [];
+    // After a batch-level failure (e.g. throttling) stop issuing preview
+    // requests for this sync instead of immediately hitting Graph again.
+    const videoThumbnails: MetaGraphBatchResult<
+      MetaGraphListResponse<MetaVideoThumbnailGraphNode>
+    > = creatives.aborted
+      ? {
+          results: new Map(),
+          failures: new Map(
+            videoIds.map((videoId) => [videoId, "notAttempted"]),
+          ),
+          batchRequests: 0,
+          aborted: true,
+        }
+      : await this.getGraphBatch<
+          MetaGraphListResponse<MetaVideoThumbnailGraphNode>
+        >(
+          videoIds.map((videoId) => {
+            const params = new URLSearchParams({
+              fields: "uri,width,height,is_preferred",
+              limit: "100",
+            });
+
+            return {
+              key: videoId,
+              relativeUrl: `${videoId}/thumbnails?${params.toString()}`,
+            };
+          }),
+          accessToken,
+          "/video-thumbnails",
+        );
+    stats.videosRequested = videoIds.length;
+    stats.videoBatchRequests = videoThumbnails.batchRequests;
+    stats.videosSucceeded = videoThumbnails.results.size;
+    stats.videosFailed = videoThumbnails.failures.size;
+    this.countBatchFailures(stats, videoThumbnails.failures);
+
     const videoPreviewUrls = new Map<string, string>();
 
-    for (const [videoId, payload] of videoThumbnailPayloads) {
+    for (const [videoId, payload] of videoThumbnails.results) {
       const thumbnailUrl = this.largestVideoThumbnailUrl(payload.data);
 
       if (thumbnailUrl) {
@@ -1428,17 +1623,40 @@ export class MetaAdapter implements IntegrationAdapter {
       }
     }
 
-    const previewUrls = new Map<string, string>();
+    const previews = new Map<string, MetaCreativePreview>();
 
-    for (const [creativeId, creative] of creatives) {
-      const previewUrl = this.creativePreviewUrl(creative, videoPreviewUrls);
+    for (const creativeId of creativeIds) {
+      const creative = creatives.results.get(creativeId);
 
-      if (previewUrl) {
-        previewUrls.set(creativeId, previewUrl);
+      if (!creative) {
+        previews.set(creativeId, { status: "failed", url: null });
+        continue;
+      }
+
+      const videoId = this.creativeVideoId(creative);
+      const url = this.creativePreviewUrl(creative, videoPreviewUrls);
+
+      if (videoId && videoThumbnails.failures.has(videoId)) {
+        // The creative image is only a lower-quality fallback here.
+        previews.set(creativeId, { status: "failed", url });
+      } else if (url) {
+        previews.set(creativeId, { status: "fetched", url });
+      } else {
+        stats.creativesWithoutPreview += 1;
+        previews.set(creativeId, { status: "absent", url: null });
       }
     }
 
-    return previewUrls;
+    return previews;
+  }
+
+  private countBatchFailures(
+    stats: MetaPreviewEnrichmentStats,
+    failures: Map<string, MetaGraphBatchFailureReason>,
+  ): void {
+    for (const reason of failures.values()) {
+      stats.failureReasons[reason] += 1;
+    }
   }
 
   private creativePreviewUrl(
@@ -1522,18 +1740,36 @@ export class MetaAdapter implements IntegrationAdapter {
     return candidates[0]?.url ?? null;
   }
 
+  /**
+   * Runs GET sub-requests through the Graph batch endpoint in chunks of 50.
+   * Never throws: every key ends up either in results or in failures. A
+   * failing whole batch request marks its chunk failed, skips the remaining
+   * chunks (notAttempted) and keeps results from earlier chunks.
+   */
   private async getGraphBatch<T>(
     requests: Array<{ key: string; relativeUrl: string }>,
     accessToken: string,
     operation: string,
-  ): Promise<Map<string, T>> {
+  ): Promise<MetaGraphBatchResult<T>> {
     const startedAt = Date.now();
     const results = new Map<string, T>();
+    const failures = new Map<string, MetaGraphBatchFailureReason>();
     let batchCount = 0;
+    let aborted = false;
 
     try {
-      for (let offset = 0; offset < requests.length; offset += 50) {
-        const chunk = requests.slice(offset, offset + 50);
+      for (
+        let offset = 0;
+        offset < requests.length;
+        offset += META_GRAPH_BATCH_SIZE
+      ) {
+        const chunk = requests.slice(offset, offset + META_GRAPH_BATCH_SIZE);
+
+        if (aborted) {
+          chunk.forEach((request) => failures.set(request.key, "notAttempted"));
+          continue;
+        }
+
         batchCount += 1;
         const body = new URLSearchParams({
           access_token: accessToken,
@@ -1544,47 +1780,77 @@ export class MetaAdapter implements IntegrationAdapter {
             })),
           ),
         });
-        const response = await this.fetchImpl(
-          `https://graph.facebook.com/${this.getGraphApiVersion()}`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
+        let status = 0;
+        let payload: unknown = null;
+        let chunkFailure: MetaGraphBatchFailureReason | null = null;
+
+        try {
+          const response = await this.fetchImpl(
+            `https://graph.facebook.com/${this.getGraphApiVersion()}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+              body,
             },
-            body,
-          },
-        );
-        const payload = (await response.json().catch(() => null)) as unknown;
-
-        if (!response.ok || !Array.isArray(payload)) {
-          const errorPayload = this.asRecord(payload);
-          const error = this.asRecord(errorPayload?.error);
-
-          throw new Error(
-            this.asString(error?.message) ??
-              `Meta Graph batch HTTP ${response.status}`,
           );
+          status = response.status;
+          payload = (await response.json().catch(() => null)) as unknown;
+
+          if (!response.ok || !Array.isArray(payload)) {
+            chunkFailure = this.graphFailureReason(status, payload);
+          }
+        } catch {
+          chunkFailure = "transportError";
         }
 
+        if (chunkFailure || !Array.isArray(payload)) {
+          const reason = chunkFailure ?? "unexpected";
+          chunk.forEach((request) => failures.set(request.key, reason));
+          aborted = true;
+          // Status and reason only: Graph error text and URLs stay out of logs.
+          console.warn("[wpptrack:meta-graph] batch request failed", {
+            operation,
+            status,
+            reason,
+            chunkSize: chunk.length,
+            skippedRequests: Math.max(
+              0,
+              requests.length - offset - chunk.length,
+            ),
+          });
+          continue;
+        }
+
+        const items = payload;
+
         chunk.forEach((request, index) => {
-          const item = this.asRecord(
-            payload[index],
-          ) as MetaGraphBatchItem | null;
+          const item = this.asRecord(items[index]) as MetaGraphBatchItem | null;
+
           const code = this.asInteger(item?.code);
 
-          if (code < 200 || code >= 300) {
+          if (!item || code === 0) {
+            failures.set(request.key, "missingItem");
             return;
           }
 
-          const parsedBody = this.parseGraphBatchBody<T>(item?.body);
+          const parsedBody = this.parseGraphBatchBody<T>(item.body);
 
-          if (parsedBody) {
+          if (code < 200 || code >= 300) {
+            failures.set(
+              request.key,
+              this.graphFailureReason(code, parsedBody),
+            );
+          } else if (parsedBody) {
             results.set(request.key, parsedBody);
+          } else {
+            failures.set(request.key, "missingItem");
           }
         });
       }
 
-      return results;
+      return { results, failures, batchRequests: batchCount, aborted };
     } finally {
       this.logSlowGraphList(
         operation,
@@ -1593,6 +1859,33 @@ export class MetaAdapter implements IntegrationAdapter {
         results.size,
       );
     }
+  }
+
+  private graphFailureReason(
+    status: number,
+    payload: unknown,
+  ): MetaGraphBatchFailureReason {
+    const error = this.asRecord(this.asRecord(payload)?.error);
+    const graphCode = this.asInteger(error?.code);
+    const [minAdsCode, maxAdsCode] = META_ADS_RATE_LIMIT_CODE_RANGE;
+
+    if (
+      status === 429 ||
+      META_RATE_LIMIT_CODES.has(graphCode) ||
+      (graphCode >= minAdsCode && graphCode <= maxAdsCode)
+    ) {
+      return "rateLimited";
+    }
+
+    if (status >= 500) {
+      return "serverError";
+    }
+
+    if (status >= 400) {
+      return "clientError";
+    }
+
+    return "unexpected";
   }
 
   private parseGraphBatchBody<T>(body: unknown): T | null {

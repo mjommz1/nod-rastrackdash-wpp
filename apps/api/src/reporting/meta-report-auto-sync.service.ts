@@ -26,6 +26,36 @@ export const META_REPORT_AUTO_SYNC_CLOCK = Symbol(
   "META_REPORT_AUTO_SYNC_CLOCK",
 );
 
+/**
+ * First automatic sync after boot. A redeploy must not hit Meta right away
+ * (all installations share the app-level rate limit of the PalmUP Meta app),
+ * so the default is a random delay between 10 and 30 minutes. An explicit
+ * WPPTRACK_META_AUTO_SYNC_INITIAL_DELAY_SECONDS below the minimum (e.g. the
+ * old .env.example value 60) is ignored in favour of the random default.
+ */
+export const META_AUTO_SYNC_MIN_INITIAL_DELAY_MS = 10 * 60_000;
+export const META_AUTO_SYNC_MAX_INITIAL_DELAY_MS = 30 * 60_000;
+
+export function resolveMetaAutoSyncInitialDelayMs(
+  configuredSeconds: string | undefined,
+  random: () => number = Math.random,
+): number {
+  const parsed = Number.parseInt(configuredSeconds ?? "", 10);
+
+  if (
+    Number.isFinite(parsed) &&
+    parsed * 1_000 >= META_AUTO_SYNC_MIN_INITIAL_DELAY_MS
+  ) {
+    return parsed * 1_000;
+  }
+
+  const span =
+    META_AUTO_SYNC_MAX_INITIAL_DELAY_MS - META_AUTO_SYNC_MIN_INITIAL_DELAY_MS;
+  const factor = Math.min(Math.max(random(), 0), 1);
+
+  return META_AUTO_SYNC_MIN_INITIAL_DELAY_MS + Math.round(span * factor);
+}
+
 @Injectable()
 export class MetaReportAutoSyncService
   implements OnApplicationBootstrap, OnModuleDestroy
@@ -68,6 +98,9 @@ export class MetaReportAutoSyncService
         });
     };
 
+    this.logger.log(
+      `Meta auto sync: first run in ${Math.round(config.initialDelayMs / 60_000)} min, then every ${Math.round(config.intervalMs / 60_000)} min`,
+    );
     this.initialTimer = setTimeout(run, config.initialDelayMs);
     this.timer = setInterval(run, config.intervalMs);
   }
@@ -193,11 +226,9 @@ export class MetaReportAutoSyncService
           "WPPTRACK_META_AUTO_SYNC_INTERVAL_MINUTES",
           180,
         ) * 60_000,
-      initialDelayMs:
-        this.positiveIntegerEnv(
-          "WPPTRACK_META_AUTO_SYNC_INITIAL_DELAY_SECONDS",
-          60,
-        ) * 1_000,
+      initialDelayMs: resolveMetaAutoSyncInitialDelayMs(
+        process.env.WPPTRACK_META_AUTO_SYNC_INITIAL_DELAY_SECONDS,
+      ),
       lookbackDays: this.positiveIntegerEnv(
         "WPPTRACK_META_AUTO_SYNC_LOOKBACK_DAYS",
         7,

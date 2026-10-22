@@ -1,0 +1,16 @@
+[
+  {
+    "body": {
+      "event": "lead.created",
+      "event_name": "Lead",
+      "phone": "5500000000000",
+      "external_id": "test-entry-001",
+      "ctwa_clid": "test-ctwa-click-id",
+      "source_type": "paid",
+      "lead_source": "meta_ads",
+      "source": "unnichat",
+      "channel": "whatsapp",
+      "origin": "test-entry"
+    }
+  }
+]

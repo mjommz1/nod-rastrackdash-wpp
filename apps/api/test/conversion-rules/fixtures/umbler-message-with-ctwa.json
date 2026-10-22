@@ -1,0 +1,153 @@
+{
+  "Type": "Message",
+  "EventDate": "2026-07-18T14:40:44.2401986Z",
+  "Payload": {
+    "Type": "Chat",
+    "Content": {
+      "_t": "BasicChatModel",
+      "Organization": {
+        "Id": "org_fixture_001"
+      },
+      "Contact": {
+        "LastActiveUTC": "2026-07-18T14:40:40Z",
+        "PhoneNumber": "+15550001111",
+        "Lid": null,
+        "ProfilePictureUrl": null,
+        "IsBlocked": false,
+        "ScheduledMessages": [],
+        "GroupIdentifier": null,
+        "ContactType": "DirectMessage",
+        "Tags": [],
+        "Preferences": [],
+        "Name": "Synthetic Contact",
+        "Id": "contact_fixture_001"
+      },
+      "Channel": {
+        "_t": "ChatGupshupWhatsappChannelReferenceModel",
+        "ChannelType": "WhatsappApi",
+        "PhoneNumber": "+15550002222",
+        "Name": "Synthetic Support Channel",
+        "Id": "channel_fixture_001"
+      },
+      "Sector": {
+        "Default": false,
+        "Order": 5,
+        "GroupIds": [],
+        "Name": "Synthetic General Sector",
+        "Id": "sector_fixture_001"
+      },
+      "SectorHistory": [
+        {
+          "SectorId": "sector_fixture_001",
+          "Default": false,
+          "Order": 5,
+          "GroupIds": [],
+          "EnteredAt": "2026-07-18T14:40:44.1107498Z",
+          "FirstMemberReplyMessage": null,
+          "FirstContactMessage": {
+            "EventAtUTC": "2026-07-18T14:40:40Z",
+            "Id": "message_fixture_001"
+          },
+          "Name": "Synthetic General Sector",
+          "Id": "sector_history_fixture_001"
+        }
+      ],
+      "OrganizationMember": null,
+      "OrganizationMembers": [],
+      "OrganizationMemberHistory": [],
+      "Tags": [],
+      "LastMessage": {
+        "Prefix": null,
+        "HeaderContent": null,
+        "Content": "Synthetic inbound message for parser tests.",
+        "Footer": null,
+        "File": null,
+        "Thumbnail": null,
+        "QuotedStatusUpdate": null,
+        "Contacts": [],
+        "MessageType": "Text",
+        "SentByOrganizationMember": null,
+        "IsPrivate": false,
+        "Location": null,
+        "Question": null,
+        "Source": "Contact",
+        "InReplyTo": null,
+        "MessageState": "Processing",
+        "EventAtUTC": "2026-01-15T14:31:44.000Z",
+        "Chat": {
+          "Id": "chat_fixture_001"
+        },
+        "FromContact": null,
+        "TemplateId": null,
+        "Buttons": [],
+        "LatestEdit": null,
+        "BotInstance": null,
+        "ForwardedFrom": null,
+        "ForwardCount": 0,
+        "FrequentlyForwarded": false,
+        "IsForwardRestricted": false,
+        "ScheduledMessage": null,
+        "BulkSendSession": null,
+        "Elements": null,
+        "Mentions": [],
+        "Ad": {
+          "ConversionSource": "ad",
+          "SourceUrl": "https://example.invalid/ads/source/fixture-001",
+          "Description": "Synthetic advertisement description.\nSecond synthetic line.",
+          "Title": "Synthetic Advertisement",
+          "ThumbnailUrl": "https://example.invalid/ads/thumbnail/fixture-001.jpg",
+          "MediaUrl": "https://example.invalid/ads/media/fixture-001.jpg",
+          "SourceType": "ad",
+          "SourceId": "ad_fixture_001",
+          "FileId": null,
+          "CTWaCLId": "ctwa_fixture_001"
+        },
+        "FileId": null,
+        "Reactions": [],
+        "DeductedAiCredits": null,
+        "IsFavorite": null,
+        "Carousel": [],
+        "Billable": null,
+        "LinkPreview": null,
+        "LinkPreviewAttemptedAtUTC": null,
+        "EventAtUTC": "2026-07-18T14:40:40Z",
+        "Id": "message_fixture_001",
+        "CreatedAtUTC": "2026-07-18T14:40:44.1114837Z"
+      },
+      "LastMessageReaction": null,
+      "RedactReason": null,
+      "UsingInactivityFlow": false,
+      "UsingWaitingFlow": false,
+      "InactivityFlowAt": null,
+      "WaitingFlowAt": null,
+      "Open": true,
+      "Private": false,
+      "Waiting": true,
+      "WaitingSinceUTC": "2026-07-18T14:40:40Z",
+      "TotalUnread": 1,
+      "TotalAIResponses": null,
+      "ClosedAtUTC": null,
+      "EventAtUTC": "2026-07-18T14:40:40Z",
+      "FirstMemberReplyMessage": null,
+      "FirstContactMessage": {
+        "EventAtUTC": "2026-07-18T14:40:40Z",
+        "Id": "message_fixture_001"
+      },
+      "Bots": [
+        {
+          "Status": "Active",
+          "BotId": "bot_fixture_001",
+          "BotInstanceId": null,
+          "TriggerName": null
+        }
+      ],
+      "LastOrganizationMember": null,
+      "Message": null,
+      "Visibility": null,
+      "FavoriteMessages": [],
+      "Id": "chat_fixture_001",
+      "CreatedAtUTC": "2026-07-18T14:40:44.1107478Z"
+    }
+  },
+  "EventId": "delivery_fixture_001"
+}

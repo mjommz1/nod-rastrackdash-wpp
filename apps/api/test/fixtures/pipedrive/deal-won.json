@@ -1,0 +1,63 @@
+{
+  "data": {
+    "id": 4001,
+    "title": "Synthetic deal A",
+    "value": 6000,
+    "org_id": null,
+    "origin": "ManuallyCreated",
+    "status": "won",
+    "channel": null,
+    "add_time": "2026-10-10T18:38:52Z",
+    "currency": "BRL",
+    "owner_id": 2000001,
+    "stage_id": 1,
+    "won_time": "2026-10-12T20:37:06Z",
+    "label_ids": [],
+    "lost_time": null,
+    "origin_id": null,
+    "person_id": 3001,
+    "channel_id": null,
+    "close_time": "2026-10-12T20:37:06Z",
+    "visible_to": "3",
+    "is_archived": false,
+    "lost_reason": null,
+    "pipeline_id": 1,
+    "probability": null,
+    "update_time": "2026-10-12T20:37:06Z",
+    "archive_time": null,
+    "custom_fields": {
+      "synthetic_custom_field_a": null,
+      "synthetic_custom_field_b": null,
+      "synthetic_custom_field_c": null
+    },
+    "first_won_time": "2026-10-12T20:37:06Z",
+    "creator_user_id": 2000001,
+    "stage_change_time": "2026-10-10T18:44:18Z",
+    "expected_close_date": null
+  },
+  "meta": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "type": "general",
+    "action": "change",
+    "entity": "deal",
+    "user_id": "2000001",
+    "version": "2.0",
+    "entity_id": "4001",
+    "timestamp": "2026-10-12T20:37:06.577Z",
+    "company_id": "1000001",
+    "webhook_id": "5001",
+    "is_bulk_edit": false,
+    "change_source": "app",
+    "correlation_id": "00000000-0000-4000-8000-0000000000a1",
+    "webhook_owner_id": "2000001",
+    "permitted_user_ids": ["2000001", "2000002"],
+    "attempt": 1,
+    "host": "example-company.pipedrive.com"
+  },
+  "previous": {
+    "status": "open",
+    "won_time": null,
+    "close_time": null,
+    "update_time": "2026-10-12T20:37:00Z"
+  }
+}

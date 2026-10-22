@@ -27,7 +27,7 @@ A arquitetura recomendada para produção é **Vercel para o web** + **Dokploy e
 
 Você pode seguir o caminho local primeiro e migrar para Dokploy depois — os passos de produto (3 em diante) são os mesmos nos dois caminhos.
 
-> **Já está no ar?** Se a sua instância já roda com clientes e você só quer as novidades do template (ex.: Data Crazy), **não reinstale**: siga [`setup/update.md`](setup/update.md) — redeploy da API (as migrations rodam sozinhas) e novo deploy do web, mantendo banco, administrador, licença e chaves.
+> **Já está no ar?** Se a sua instância já roda com clientes e você só quer as novidades do template (ex.: Data Crazy), **não reinstale**: siga [`setup/update.md`](setup/update.md) — redeploy da API (as migrations rodam sozinhas) e novo deploy do web, mantendo banco, administrador, licença e chaves. Se você envia conversões para a Meta, não pule o passo [Conversões Meta depois desta atualização](setup/update.md#conversões-meta-depois-desta-atualização-trocar-token).
 
 ## 3. Clonar, instalar e configurar o ambiente
 
@@ -93,39 +93,53 @@ Logue com o administrador criado, crie seu primeiro workspace para um cliente fi
 
 ## 9. Conectar Meta Ads
 
-Siga o [guia manual de Meta Ads](setup/meta-manual.md): criar/usar um usuário do sistema no Gerenciador de Negócios do cliente, gerar um token e colá-lo na UI de **Integrações** do workspace — nunca em `.env` público nem em chat.
+Em `/integrations`, aba **Anúncios** → card **Meta Ads** (é a conexão de **anúncios**: traz os dados de tráfego, cruza com os leads e envia as conversões para a Meta/CAPI; ela **não** recebe conversas — isso é o **WhatsApp Cloud API**, na aba WhatsApp). Você tem dois caminhos, ambos em **Tokens, BMs e destinos**:
+
+- **Conectar Meta (PalmUP)** — o mais simples. Como **owner** do workspace, clique em **Conectar Meta (PalmUP)**, depois em **Abrir login da Meta**, autorize com o Facebook que acessa a BM do cliente, volte ao painel e clique em **Ja autorizei, concluir**. Você **não** precisa criar um app Meta próprio. Exige `PALMUP_META_BROKER_URL` na API (já vem no `.env.example`): é uma **URL pública**, não é segredo nem App Secret. O App Secret do app Meta da PalmUP **nunca** vai para a sua VPS. Detalhes em [`setup/environment.md`](setup/environment.md#palmup_meta_broker_url--login-social-meta-pela-palmup).
+- **Token permanente** — siga o [guia manual de Meta Ads](setup/meta-manual.md): criar/usar um usuário do sistema no Gerenciador de Negócios do cliente, gerar um token e colá-lo na UI de **Integrações** do workspace — nunca em `.env` público nem em chat. Esse token não expira; o do login social é um token de usuário, que a Meta pode expirar.
+
+Nos dois casos, o próximo passo é o mesmo: escolher BM, contas de anúncio, Pixel e Página.
 
 ⚠️ Isso é a conexão de **anúncios** (Pixel, conta de anúncios, destino de conversão). Ela **não** recebe mensagem nenhuma. Quem traz mensagem é o passo 10.
 
+**Atualizou a instância e o LeadSubmitted ficou "Bloqueado"?** Isso veio de uma mudança do produto, não de um erro seu: agora todo envio para a Meta usa **Integrações → Tokens, BMs e destinos**. Se você já tem um card ali, **não** clique em **+ Nova conexao** e **não** apague o BM — clique no ícone de **chave** (**Trocar token**) do card que já existe, cole o **mesmo** token e clique em **Validar troca**. BM, conta, pixel e página continuam os mesmos. Se a lista estiver vazia (você usava o caminho antigo da Alpha), crie a estrutura pelo [guia de Meta Ads](setup/meta-manual.md).
+
+Os eventos que **já** ficaram bloqueados não voltam sozinhos. Depois do Trocar token, **atualize a instância** (API e web) e, como **owner**, abra **Auditoria de conversoes** (`/events`), escolha um período que cubra os dias bloqueados, clique em **Aplicar** e em **Reenviar bloqueados**. Não crie BM novo. Sem essa atualização, os bloqueados não são reenviados. Detalhes em [`setup/update.md`](setup/update.md#eventos-que-já-ficaram-bloqueado).
+
+Essas duas orientações (**Trocar token** e **Reenviar bloqueados**) continuam valendo com o **Conectar Meta (PalmUP)**: se você já tem card, o conserto é o **Trocar token** no mesmo card, não um login social novo.
+
 ## 10. Conectar WhatsApp
 
-Leia [`setup/whatsapp-providers.md`](setup/whatsapp-providers.md) antes de escolher — lá está o contrato completo, a matriz do que já funciona e o que ainda não. Existem **dois painéis diferentes** em `/integrations`, e escolher o errado é o erro mais comum:
+Leia [`setup/whatsapp-providers.md`](setup/whatsapp-providers.md) antes de escolher — lá está o contrato completo, a matriz do que já funciona e o que ainda não. Em `/integrations` (o **Hub de Integrações**) cada plataforma é um **card** com a logo e o estado **Ativo** ou **Disponível**; clique no card para abrir a janela de conexão. Existem **dois tipos de conexão** e escolher o errado é o erro mais comum — eles ficam em abas diferentes:
 
-### 10.1 Painel "Provedores e receivers" — Uazapi, NOD API, WAHA, Z-API
+### 10.1 Aba WhatsApp — card Uazapi (WAHA, Z-API e NOD API como "Em breve")
 
-São conexões **por workspace**, criadas na própria tela — você digita as credenciais do cliente ali, não em variável de ambiente:
+> **WAHA, Z-API e NOD API aparecem como "Em breve"** para novas conexões. Se você já tinha uma conexão de um deles, ela continua aparecendo como **Ativo** e você segue podendo testar, editar e excluir; só não é possível criar novas por enquanto.
+
+A Uazapi é uma conexão **por workspace**, criada na própria tela — você digita as credenciais do cliente ali, não em variável de ambiente:
 
 - **Uazapi (BYO)** — sua própria instância Uazapi (URL da API, Token, Instance ID opcional). Receiver inbound **pronto**. É o único provedor que também avalia **mensagem do atendente** e **etiquetas** para gatilhos.
-- **NOD API** — broker gerenciado pela PalmUP, add-on licenciado (Instance ID + Instance token; autentica com a sua `LICENSE_KEY`). Status funciona; **receiver inbound ainda não existe**.
-- **WAHA** — sua instância self-hosted [WAHA](https://github.com/devlikeape/waha) (URL da API, API key, Sessão). Receiver inbound **pronto**.
-- **Z-API** — sua instância [Z-API](https://www.z-api.io/) (URL da API, Instance ID, Token). Receiver inbound **pronto**.
+- **WAHA — Em breve (só conexões já existentes).** Ainda não validado; não é possível criar conexões novas pela tela. Quem já tinha uma continua podendo testar, editar e excluir.
+- **Z-API — Em breve (só conexões já existentes).** Não é possível criar conexões novas pela tela; quem já tinha uma continua podendo testar, editar e excluir.
+- **NOD API — Em breve (só conexões já existentes).** Mesma regra da Z-API. Hoje o receiver inbound da NOD API ainda não existe.
 
-Fluxo: **Salvar conexão → Testar → Gerar receiver** (copie a URL completa, com `?token=`, e cole no campo de webhook do painel do provedor) → confirme `connected`. Para trocar credenciais use **Editar**; para remover use **Excluir**, que pede o **nome exato da conexão** digitado para confirmar.
+Fluxo: **Salvar conexão → Testar → Gerar receiver** (copie a URL completa, com `?token=`, e cole no campo de webhook do painel do provedor) → confirme `connected`. Para trocar credenciais use **Editar**; para remover um número/instância use **Excluir** no card do provedor, que pede o **nome exato da conexão** digitado para confirmar.
 
 As variáveis `UAZAPI_*`/`WAHA_*`/`ZAPI_*`/`NOD_API_BROKER_URL` continuam existindo, mas hoje são só o **padrão do deployment** (fallback quando a conexão não traz aquele campo) — não são mais o caminho principal.
 
-### 10.2 Painel "Webhooks de entrada" — Umbler, Gupshup, Data Crazy e Meta WhatsApp (Cloud API)
+### 10.2 Aba Atendimento e vendas — cards Umbler, Gupshup, Data Crazy, Unnichat e Payt (e WhatsApp Cloud API na aba WhatsApp)
 
 Conexões por workspace, cada uma com segredo próprio. **Umbler Talk** e **Gupshup**:
 
-1. **Adicionar conexão** → escolha a plataforma → **Gerar webhook** e copie a **URL de callback** (aparece uma única vez) para o painel da Umbler/Gupshup.
+1. Abra o card da plataforma (Umbler Talk ou Gupshup) → **Gerar webhook** (a janela já vem fixa na plataforma; use **Adicionar conexão** se já houver outra) e copie a **URL de callback** (aparece uma única vez) para o painel da Umbler/Gupshup.
 2. **Cadastre o canal/número agora**, com o botão **Cadastrar canal/número** — você **não precisa** esperar o primeiro lead chegar. O canal fica provisório e é mesclado automaticamente quando a primeira mensagem real daquele número chegar.
-3. Vá em `/settings#whatsapp-triggers` → **Gatilhos de conversão** → **Nova regra**, limitando a regra aos canais que devem converter.
+3. Vá em `/conversions` (menu **Conversões**) → **Nova regra** e escolha o alcance: **Todos os números** ou **Números específicos**.
+4. Os parsers **Umbler v1** e **Gupshup v1** já vêm certificados pela atualização (mesmos contratos em produção no SaaS). A conexão e cada regra só vão para produção quando você ativar, uma a uma.
 
 **Data Crazy** também é uma conexão inbound por workspace, mas o fluxo de
 canal é diferente:
 
-1. **Adicionar conexão** → escolha **Data Crazy** → **Gerar webhook** e
+1. Abra o card **Data Crazy** → **Gerar webhook** e
    copie a URL completa, com `?token=` (ela aparece uma única vez).
 2. No Data Crazy, crie uma automação HTTP de **mensagem recebida** e cole
    essa URL. Não há variável de ambiente nem credencial específica de Data
@@ -136,19 +150,54 @@ canal é diferente:
 4. Apenas mensagens inbound com **CTWA** viram leads operacionais.
    Palavra-chave, tag e outros gatilhos de automação do Data Crazy não
    fazem parte do parser v1.
-5. Depois que uma entrega CTWA real for processada em observação, certifique
-   o parser **Data Crazy v1** no backoffice; então configure a rota Meta e
-   ative produção, no mesmo gate de Gupshup e Meta Cloud.
+5. O parser **Data Crazy v1** já vem certificado pela atualização (é o mesmo
+   contrato validado com CTWAs reais no SaaS); não há passo de certificação.
+   Depois que uma entrega CTWA real for processada em observação, configure
+   a rota Meta e ative produção (a conexão e cada regra, uma a uma), no mesmo
+   gate de Gupshup e Meta Cloud. Nada vai para produção sozinho.
+
+**Payt** (plataforma de venda) não tem conexão própria: as vendas viram
+conversões por uma regra em **Conversões → Nova regra → origem Payt**, uma
+regra por evento (Compra aprovada → `Purchase`, Pix/boleto gerado →
+`InitiateCheckout`, Carrinho abandonado (beta) → `CartAbandoned`). Copie o
+endereço da regra para o Postback da Payt e confira em **Eventos recebidos**;
+a regra nasce em observação. Só vendas de leads CTWA (com `ctwa_clid`) dos
+números da regra são enviadas; sem ID do anúncio, só de leads que entraram por
+um número Unnichat (par único página + pixel). Passo a passo, verificação e
+rollback em [`setup/payt.md`](setup/payt.md).
+
+**Unnichat** é uma conexão por número: no card **Unnichat**, informe o
+número de WhatsApp do cliente (não o do lead) ao gerar o webhook, cole a URL de entrada
+no fluxo do Unnichat que recebe a conversa do anúncio e, para marcar
+conversões, crie em **Conversões → Nova regra → Automação do Unnichat** uma
+regra por evento e chame a URL dela no ponto do fluxo. Sem `ctwa_clid` nada é
+enviado; lead com `ctwa_clid` e sem ID do anúncio vai pelo único par página +
+pixel do número. Cada número escolhe o roteamento Meta: **Herdar do workspace**
+(padrão) ou **Configurar neste número**, com a prontidão e o motivo. Parsers certificados pela migration; conexão,
+número e regras nascem em observação. Passo a passo, verificação e rollback em
+[`setup/unnichat.md`](setup/unnichat.md).
 
 ### 10.3 Meta WhatsApp (Cloud API) — conectar a Meta direto (CTWA)
 
 É a opção para conectar **seu número oficial da Meta sem intermediário**, no mesmo papel que Kinbox/Data Crazy cumprem quando "conectam a Meta". Não é a conexão de Meta Ads do passo 9 e não usa o token do Gerenciador de Negócios.
 
-1. `/integrations` → **Webhooks de entrada** → **Adicionar conexão** → **Meta WhatsApp (Cloud API)** → **Gerar webhook**.
+1. `/integrations` → aba **WhatsApp** → card **WhatsApp Cloud API** → **Gerar webhook**.
 2. Copie **URL de callback** e **Verify token** (os dois aparecem uma única vez, em linhas separadas). Aqui a URL **não** leva `?token=`.
 3. No app Meta: **Configurar webhooks** → cole URL e Verify token → verificar e salvar.
 4. Assine o campo **`messages`**. Sem isso a Meta valida e nunca envia nada.
 5. Cadastre o canal/número e configure a rota Meta do canal.
+
+Uma rota pode usar **qualquer conta do BM**, sem criar uma rota por conta;
+cada anúncio ainda precisa resolver uma conta autorizada ao destino no mesmo
+workspace. **Rota pronta** não certifica o parser nem liga produção, e ativar
+não envia CTWA antigos automaticamente. A integração nativa
+**meta_cloud/v1** já validada permite ativação humana
+sem primeira CTWA ou certificação privada por instalação, inclusive com
+`observation_only` antigo. Versões desconhecidas ou retiradas ficam
+bloqueadas. Como owner, use **Recuperar CTWAs anteriores** no canal para
+prévia, confirmação e envio de um teste real, antes dos demais. Replay
+continua desligado por padrão e exige habilitação explícita do operador.
+Veja o [guia de produção e recuperação](setup/meta-cloud-recovery.md).
 
 **O que já funciona:** atribuição de **CTWA** — o produto lê `referral.ctwa_clid` e `referral.source_id` (ID do anúncio) das mensagens recebidas e gera lead/conversão a partir delas.
 
@@ -166,11 +215,33 @@ suportado como conexão inbound por webhook, conforme o passo 10.2.
 3. `INBOUND_CONVERSION_RULES_ENABLED=true`
 4. `INBOUND_WEBHOOK_PRODUCTION_ENABLED=true` (obrigatório em produção)
 5. Redeploy da API
-6. Confirme em `/settings#whatsapp-triggers` (com a conexão WhatsApp/origem já criada) que **Nova regra** aparece disponível
+6. Confirme em `/conversions` (com a conexão WhatsApp/origem já criada) que **Nova regra** aparece disponível
 
 Detalhe completo de cada variável em [`setup/environment.md`](setup/environment.md#gatilhos-de-conversão--obrigatórias-no-caminho-do-aluno).
 
-A origem aparece na central de Gatilhos assim que existe uma conexão inbound (Umbler, Gupshup, Meta Cloud). **Data Crazy** segue o fluxo CTWA de observação, certificação e produção do passo 10.2; o canal só é descoberto após o primeiro webhook. Para **Uazapi**, a origem é criada automaticamente pelo produto quando chega a primeira mensagem **enviada pelo número conectado** ou uma mudança de etiqueta. **WAHA e Z-API** recebem leads normalmente, mas **ainda não** têm essa criação automática de origem na central de Gatilhos — é uma lacuna conhecida, não um passo esquecido.
+A origem aparece na central de Gatilhos assim que existe uma conexão inbound (Umbler, Gupshup, Meta Cloud). **Data Crazy** segue o fluxo CTWA de observação e ativação de produção do passo 10.2 (o parser já vem certificado); o canal só é descoberto após o primeiro webhook. Para **Uazapi**, a origem é criada automaticamente pelo produto quando chega a primeira mensagem **enviada pelo número conectado** ou uma mudança de etiqueta. **WAHA e Z-API** recebem leads normalmente, mas **ainda não** têm essa criação automática de origem na central de Gatilhos — é uma lacuna conhecida, não um passo esquecido.
+
+### 10.4 Aba CRM — cards Kommo e Pipedrive (opcional)
+
+Os CRMs não conectam número de WhatsApp: eles dizem **quando** um negócio
+avançou, e o RastrackDash envia a conversão para a Meta usando o lead de
+WhatsApp que já existe no workspace. **Sem `ctwa_clid` nada é enviado.**
+
+- **Kommo:** exige `KOMMO_CRM_ENCRYPTION_KEY` na API. Leads com `ctwa_clid` e
+  **sem ID do anúncio** passam a ser enviados pela página + pixel verificados do
+  workspace (como no SaaS), quando entraram por um número autorizado na conexão;
+  esse caminho exige `INBOUND_WEBHOOKS_ENABLED=true` e
+  `INBOUND_WEBHOOK_PRODUCTION_ENABLED=true`.
+- **Pipedrive:** gere uma chave nova com `openssl rand -base64 32` e preencha
+  `PIPEDRIVE_CRM_ENCRYPTION_KEY` na env da API — **diferente** da chave do
+  Kommo (igual ou inválida, a API não sobe). Depois: token de API do Pipedrive →
+  conectar → atualizar catálogo → números autorizados → regras de etapa (nascem
+  em observação) → gerar a URL do webhook (aparece uma vez) → criar no Pipedrive
+  o webhook v2 de **negócio alterado**. Passo a passo em
+  [`setup/pipedrive.md`](setup/pipedrive.md).
+
+Com a licença bloqueada, os dois CRMs ficam só leitura (gravações respondem 423)
+e nada é processado ou enviado em segundo plano.
 
 ## 11. Marca (whitelabel) — opcional
 
@@ -184,8 +255,9 @@ Repita, no ambiente publicado (não só localmente):
 - `/backoffice` → checklist completo
 - `/backoffice/license` → licença utilizável
 - `/integrations` → Meta Ads conectado e ao menos uma conexão de WhatsApp (provedor com receiver **ou** webhook de entrada) funcionando
-- Se usa gatilhos: `/settings#whatsapp-triggers` mostra a origem e o botão **Nova regra**
+- Se usa gatilhos: `/conversions` mostra a origem e o botão **Nova regra**
 - Se usou Dokploy: sem crash-loop no log do serviço da API ([`setup/troubleshooting.md`](setup/troubleshooting.md) tem o roteiro de diagnóstico)
+- Se usou Dokploy: o log de build mostra `build identity: <SHA de 40 caracteres> (source: git)` e o `/backoffice` mostra `Versão instalada` com os mesmos 7 primeiros caracteres. Você não configura isso — o build lê o commit sozinho. Se aparecer "Não foi possível verificar atualizações", siga [Versão instalada](setup/update.md#versão-instalada); nunca preencha um SHA à mão
 
 ## Referência rápida
 
@@ -193,7 +265,7 @@ Repita, no ambiente publicado (não só localmente):
 - [Índice de guias de instalação](setup/README.md)
 - [Local (Docker Compose)](setup/local.md) · [VPS — dimensionamento](setup/vps.md) · [Deploy com Dokploy](setup/dokploy.md) · [Atualizar instância já no ar](setup/update.md)
 - [Variáveis de ambiente](setup/environment.md) · [Troubleshooting](setup/troubleshooting.md)
-- [Meta Ads manual](setup/meta-manual.md) · [Provedores de WhatsApp, receivers e webhooks](setup/whatsapp-providers.md) · [Cobrança BYO](setup/billing/README.md)
+- [Meta Ads manual](setup/meta-manual.md) · [Provedores de WhatsApp, receivers e webhooks](setup/whatsapp-providers.md) · [Pipedrive CRM](setup/pipedrive.md) · [Cobrança BYO](setup/billing/README.md)
 - [Personalização permitida](CUSTOMIZATION.md)
 - [Matriz de aceite v1](release/ACCEPTANCE-v1.pt-BR.md) — o que já foi verificado nesta versão
 

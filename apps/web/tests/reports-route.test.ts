@@ -3,6 +3,14 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Sort headers are client buttons that navigate with the app router, which is
+// always mounted in the real route but not in static markup rendering.
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/navigation")>()),
+  useRouter: () => ({ push: vi.fn() }),
+}));
+
 import ReportsPage from "../src/app/(app)/reports/page";
 
 afterEach(() => {

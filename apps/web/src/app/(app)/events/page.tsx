@@ -20,9 +20,11 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { PresentationMask } from "../../../components/presentation-mask";
+import { getCurrentWorkspace } from "../../../lib/current-workspace";
 import { formatDateTime } from "../../../lib/date-time";
 import { serverApiFetch } from "../../../lib/server-api";
 import { EventAuditDetails } from "./event-audit-details";
+import { RetryBlockedEvents } from "./retry-blocked-events";
 
 type EventsSearchParams = Record<string, string | string[] | undefined>;
 
@@ -121,6 +123,24 @@ async function getAudit(filters: AuditFilters): Promise<AuditResult> {
     };
   } catch {
     return { state: "error", report: null };
+  }
+}
+
+/**
+ * Mesma regra da API para reenviar eventos Meta: owner do workspace, ou o
+ * platform_owner em modo suporte. Sem workspace legivel, o botao nao aparece.
+ */
+async function canRetryMetaEvents(): Promise<boolean> {
+  try {
+    const workspace = await getCurrentWorkspace();
+
+    if (workspace.accessMode === "platform_support") {
+      return workspace.platformRole === "platform_owner";
+    }
+
+    return workspace.role === "owner";
+  } catch {
+    return false;
   }
 }
 
@@ -264,6 +284,7 @@ function AuditMobileEventCard({ event }: { event: AuditEvent }) {
       <footer>
         <EventAuditDetails
           canRetry={event.canRetry}
+          deliveryState={event.deliveryState}
           eventId={event.id}
           eventLabel={event.eventLabel}
         />
@@ -325,7 +346,10 @@ export default async function EventsPage({
     page,
     pageSize,
   };
-  const result = await getAudit(filters);
+  const [result, canRetryBlocked] = await Promise.all([
+    getAudit(filters),
+    canRetryMetaEvents(),
+  ]);
   const report = result.report;
   const summary = report?.summary ?? emptySummary;
   const pagination = report?.pagination ?? {
@@ -605,6 +629,24 @@ export default async function EventsPage({
           <span className="muted">
             {report?.rangeLabel ?? `${since} a ${until}`}
           </span>
+          {canRetryBlocked && result.state !== "error" ? (
+            <>
+              <RetryBlockedEvents
+                blockedCount={summary.blocked}
+                filters={{
+                  since,
+                  until,
+                  eventName: eventName ?? "",
+                  status: status ?? "",
+                  source: source ?? "",
+                }}
+              />
+              <span className="muted">
+                Ate 500 por vez, com os filtros atuais. Eventos ja enviados nao
+                sao reenviados.
+              </span>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -648,6 +690,7 @@ export default async function EventsPage({
                   <td>
                     <EventAuditDetails
                       canRetry={event.canRetry}
+                      deliveryState={event.deliveryState}
                       eventId={event.id}
                       eventLabel={event.eventLabel}
                     />

@@ -93,6 +93,17 @@ describe("LicenseSoftlockGuard", () => {
     }
   });
 
+  it("keeps the lead spreadsheet export (GET /leads/export) available while blocked", async () => {
+    const service = fakeService({ state: blockedState() });
+    const guard = new LicenseSoftlockGuard(service);
+
+    await expect(
+      guard.canActivate(
+        makeContext({ method: "GET", path: "/leads/export?format=xlsx" }),
+      ),
+    ).resolves.toBe(true);
+  });
+
   it("blocks a mutating request with HTTP 423 and the LOCKED body when the license is blocked", async () => {
     const service = fakeService({ state: blockedState("expired") });
     const guard = new LicenseSoftlockGuard(service);

@@ -152,3 +152,83 @@ export function hashNormalizedPhone(normalized?: string): string | undefined {
   }
   return createHash("sha256").update(normalized).digest("hex");
 }
+
+/**
+ * Brazilian mobile numbers exist with and without the 9th digit (WhatsApp
+ * identities of older numbers often omit it). For a normalized 55+DDD number
+ * return both forms; any other number is returned as is.
+ */
+export function brazilNinthDigitVariants(normalized: string): string[] {
+  if (!normalized.startsWith("55")) return [normalized];
+  const ddd = normalized.slice(2, 4);
+  const local = normalized.slice(4);
+  // 55 + DDD + 9XXXXXXXX (mobile with the 9th digit) -> also without it.
+  if (
+    normalized.length === 13 &&
+    local.startsWith("9") &&
+    /^[6-9]/u.test(local.slice(1))
+  )
+    return [normalized, `55${ddd}${local.slice(1)}`];
+  // 55 + DDD + 8 digits starting 6-9 (mobile without the 9th digit) -> also with it.
+  if (normalized.length === 12 && /^[6-9]/u.test(local))
+    return [normalized, `55${ddd}9${local}`];
+  return [normalized];
+}
+
+/**
+ * Every digit form under which the same phone line may be written: for a
+ * Brazilian number, with/without the 55 country code and with/without the
+ * mobile 9th digit. The form as received always comes first; non-Brazilian
+ * numbers yield only it.
+ */
+export function phoneIdentityVariants(phone?: string | null): string[] {
+  const received = normalizePhoneIdentity(phone ?? undefined);
+  if (!received) return [];
+
+  const international = new Set<string>();
+  if (
+    (received.length === 12 || received.length === 13) &&
+    received.startsWith("55") &&
+    BR_AREA_CODES.has(received.slice(2, 4))
+  ) {
+    international.add(received);
+  }
+  if (
+    (received.length === 10 || received.length === 11) &&
+    BR_AREA_CODES.has(received.slice(0, 2))
+  ) {
+    international.add(`55${received}`);
+  }
+
+  const variants = new Set<string>([received]);
+  for (const base of international) {
+    for (const variant of brazilNinthDigitVariants(base)) {
+      variants.add(variant);
+      variants.add(variant.slice(2));
+    }
+  }
+  return [...variants];
+}
+
+/**
+ * Stable comparison key for "is this the same phone line": equivalent forms
+ * (see phoneIdentityVariants) share the same key.
+ */
+export function phoneIdentityKey(phone?: string | null): string | undefined {
+  const variants = phoneIdentityVariants(phone);
+  return variants.length ? [...variants].sort()[0] : undefined;
+}
+
+/** Hashes (Lead.phoneHash format) of every equivalent form of the phones. */
+export function hashPhoneIdentityVariants(
+  phones: Iterable<string | null | undefined>,
+): string[] {
+  const hashes = new Set<string>();
+  for (const phone of phones) {
+    for (const variant of phoneIdentityVariants(phone)) {
+      const hash = hashNormalizedPhone(variant);
+      if (hash) hashes.add(hash);
+    }
+  }
+  return [...hashes];
+}

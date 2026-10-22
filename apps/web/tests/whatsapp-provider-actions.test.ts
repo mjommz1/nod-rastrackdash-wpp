@@ -313,6 +313,35 @@ describe("WhatsApp provider actions", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("shows the license lock message when the API answers 423", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ message: "Licença bloqueada", reason: "revoked" }),
+        { status: 423, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const removed = await deleteWhatsappConnectionAction(
+      form({ connectionId: "connection_1" }),
+    );
+    const created = await createWhatsappConnectionAction(
+      form({
+        provider: "waha",
+        name: "WAHA",
+        baseUrl: "https://waha.example.com",
+        apiKey: "key",
+      }),
+    );
+
+    for (const result of [removed, created]) {
+      expect(result).toEqual({
+        ok: false,
+        message:
+          "Licença bloqueada: alterações indisponíveis. Verifique /backoffice/license.",
+      });
+    }
+  });
+
   it("reports a friendly error when the delete request fails", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ message: "boom" }), { status: 500 }),

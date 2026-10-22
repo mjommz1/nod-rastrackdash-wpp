@@ -1,6 +1,10 @@
 "use client";
 
-import type { CampaignReportRowDto } from "@wpptrack/shared";
+import {
+  currencySymbol,
+  type CampaignReportRowDto,
+  type CurrencyCode,
+} from "@wpptrack/shared";
 import { Pause, Play, Wallet, X } from "lucide-react";
 import { useCallback, useRef } from "react";
 import {
@@ -8,6 +12,7 @@ import {
   type BackofficeFormAction,
 } from "../../../components/backoffice-action-form";
 import { SubmitButton } from "../../../components/submit-button";
+import { formatReportMoney } from "../../../lib/report-currency";
 import { PresentationMask } from "../../../components/presentation-mask";
 
 type MetaLevel = "campaign" | "adset" | "ad";
@@ -19,12 +24,11 @@ const levelCopy: Record<MetaLevel, { article: string; label: string }> = {
   ad: { article: "o", label: "anuncio" },
 };
 
-function money(cents: number): string {
-  return (cents / 100).toLocaleString("pt-BR", {
-    currency: "BRL",
-    style: "currency",
-  });
-}
+const currencyAmountLabels: Record<CurrencyCode, string> = {
+  BRL: "Valor em reais",
+  USD: "Valor em dólares",
+  EUR: "Valor em euros",
+};
 
 function statusLabel(status: string): string {
   const labels: Record<string, string> = {
@@ -46,6 +50,7 @@ export function MetaEntityControls({
   budget,
   canManage,
   configuredStatus,
+  currency = "BRL",
   effectiveStatus,
   id,
   level,
@@ -54,6 +59,8 @@ export function MetaEntityControls({
   action: BackofficeFormAction;
   budget?: ReportBudget | null;
   canManage: boolean;
+  /** Moeda da conta de anúncio: o orçamento vive nela na Meta. */
+  currency?: CurrencyCode;
   configuredStatus?: string | null;
   effectiveStatus?: string | null;
   id: string;
@@ -70,6 +77,7 @@ export function MetaEntityControls({
   const targetStatus = isActive ? "PAUSED" : "ACTIVE";
   const statusVerb = isActive ? "Pausar" : "Ativar";
   const copy = levelCopy[level];
+  const money = (cents: number) => formatReportMoney(cents, currency);
   const budgetIsEditable =
     canManage && budget?.editable && budget.owner === level;
   const closeStatusDialog = useCallback(
@@ -277,9 +285,9 @@ export function MetaEntityControls({
               value={budget.amountCents}
             />
             <label className="meta-budget-field">
-              <span>Valor em reais</span>
+              <span>{currencyAmountLabels[currency]}</span>
               <span className="meta-budget-input-wrap">
-                <span>R$</span>
+                <span>{currencySymbol(currency)}</span>
                 <input
                   autoComplete="off"
                   defaultValue={(budget.amountCents / 100).toFixed(2)}

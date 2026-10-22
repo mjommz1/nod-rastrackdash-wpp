@@ -6,6 +6,7 @@ import {
 } from "./integrations";
 
 export const diagnosticSources = [
+  "kommo",
   "meta",
   "uazapi",
   "umbler",
@@ -15,7 +16,9 @@ export const diagnosticSources = [
   "internal",
   "waha",
   "zapi",
-  "data_crazy"
+  "data_crazy",
+  "payt",
+  "unnichat"
 ] as const;
 export const diagnosticSeverities = [
   "info",

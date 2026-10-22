@@ -54,3 +54,42 @@ describe("WEB_ORIGIN deployment configuration", () => {
     }
   });
 });
+
+describe("PIPEDRIVE_CRM_ENCRYPTION_KEY boot validation (optional)", () => {
+  const base = { NODE_ENV: "test", WEB_ORIGIN: "http://localhost:3000" };
+  const pipedrive = Buffer.alloc(32, 7).toString("base64");
+  const kommo = Buffer.alloc(32, 9).toString("base64");
+
+  it("boots exactly as before when the variable is unset", () => {
+    expect(() => parseDeploymentConfig(base)).not.toThrow();
+  });
+
+  it("accepts a canonical Base64 32-byte key different from the Kommo key", () => {
+    expect(() =>
+      parseDeploymentConfig({
+        ...base,
+        PIPEDRIVE_CRM_ENCRYPTION_KEY: pipedrive,
+        KOMMO_CRM_ENCRYPTION_KEY: kommo,
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses to boot with the same key as Kommo", () => {
+    expect(() =>
+      parseDeploymentConfig({
+        ...base,
+        PIPEDRIVE_CRM_ENCRYPTION_KEY: pipedrive,
+        KOMMO_CRM_ENCRYPTION_KEY: pipedrive,
+      }),
+    ).toThrow("must differ from KOMMO_CRM_ENCRYPTION_KEY");
+  });
+
+  it.each(["short", Buffer.alloc(16, 1).toString("base64"), "not base64!!"])(
+    "refuses to boot with an invalid key (%s)",
+    (value) => {
+      expect(() =>
+        parseDeploymentConfig({ ...base, PIPEDRIVE_CRM_ENCRYPTION_KEY: value }),
+      ).toThrow("PIPEDRIVE_CRM_ENCRYPTION_KEY");
+    },
+  );
+});

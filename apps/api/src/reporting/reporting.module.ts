@@ -4,6 +4,7 @@ import { AuthModule } from "../auth/auth.module";
 import { PrismaService } from "../common/prisma/prisma.service";
 import { META_REPORT_SYNC_QUEUE } from "../common/queue/queue.constants";
 import { ConversionRulesModule } from "../conversion-rules/conversion-rules.module";
+import { CurrencyModule } from "../currency/currency.module";
 import { DiagnosticsModule } from "../diagnostics/diagnostics.module";
 import { InboundWebhooksModule } from "../inbound-webhooks/inbound-webhooks.module";
 import { IntegrationsModule } from "../integrations/integrations.module";
@@ -25,6 +26,7 @@ import { WhatsappCampaignClassifierService } from "./whatsapp-campaign-classifie
     InboundWebhooksModule,
     ConversionRulesModule,
     IntegrationsModule,
+    CurrencyModule,
     BullModule.registerQueue({
       name: META_REPORT_SYNC_QUEUE,
     }),

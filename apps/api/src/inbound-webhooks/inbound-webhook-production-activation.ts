@@ -4,6 +4,12 @@ import type {
   InboundWebhookChannelStatusUpdateInputDto,
   InboundWebhookConnectionStatusUpdateInputDto,
 } from "@wpptrack/shared";
+import { hasEligibleInboundMetaRoute } from "./inbound-webhook-meta-route-eligibility";
+import type { RuntimeEnv } from "../common/runtime/runtime.module";
+import { assertMetaCloudSigningConfigured, inboundParserProductionEligible } from "./inbound-webhook-parser-eligibility";
+import { studentReplayDispatchUnsettled } from "../inbound-webhook-replay/student-replay-context";
+import { resolveCtwaDestination } from "./authorized-ctwa-destination";
+import { effectiveUnnichatMetaRouting } from "./inbound-webhook-effective-meta-routing";
 
 /**
  * Single implementation of the "promote a connection to production" and
@@ -143,6 +149,23 @@ export function metaRouteRequiredForProvider(provider: string): boolean {
   return provider !== "uazapi";
 }
 
+/**
+ * Fase 4b (Unnichat): a number is routable when its effective routing (inherit
+ * the workspace or its own override) is eligible, or when it has exactly one
+ * authorized page/pixel destination for CTWA leads without an ad id. Other
+ * providers keep requiring an eligible saved route.
+ */
+async function unnichatChannelRoutable(
+  transaction: Prisma.TransactionClient,
+  channel: PersistedInboundWebhookChannel,
+): Promise<boolean> {
+  return (
+    (await effectiveUnnichatMetaRouting(transaction, channel)).eligible ||
+    (await resolveCtwaDestination(transaction, channel)).kind ===
+      "authorized_ctwa_destination"
+  );
+}
+
 export async function applyInboundWebhookChannelStatus(
   transaction: Prisma.TransactionClient,
   input: {
@@ -164,16 +187,18 @@ export async function applyInboundWebhookChannelStatus(
   if (
     status === "active" &&
     input.requireValidMetaRoute &&
-    !current.routes.some(
-      (route) =>
-        route.validationStatus === validRouteStatus &&
-        route.metaBusinessConnectionId !== null &&
-        route.metaReportingAccountId !== null &&
-        route.metaConversionDestinationId !== null,
-    )
+    !(current.connection.provider === "unnichat"
+      ? await unnichatChannelRoutable(transaction, current)
+      : await hasEligibleInboundMetaRoute(
+          transaction,
+          workspaceId,
+          current.routes,
+        ))
   ) {
     throw new ConflictException(
-      "Configure uma rota Meta valida antes de ativar o canal",
+      current.connection.provider === "unnichat"
+        ? "Configure a Meta deste número (página e pixel do workspace ou rotas próprias) antes de ativar o canal"
+        : "Configure uma rota Meta valida antes de ativar o canal",
     );
   }
 
@@ -250,6 +275,7 @@ export async function applyInboundWebhookConnectionStatus(
     actorUserId: string;
     requireValidMetaRoute: boolean;
     seats: ExternalChannelSeatHook;
+    env?: RuntimeEnv;
   },
 ): Promise<PersistedInboundWebhookConnection> {
   const { workspaceId, connectionId, status, actorUserId } = input;
@@ -260,6 +286,7 @@ export async function applyInboundWebhookConnectionStatus(
   );
 
   if (status === "production") {
+    assertMetaCloudSigningConfigured(current.provider, input.env ?? process.env);
     await assertProductionReady(transaction, current, {
       requireValidMetaRoute: input.requireValidMetaRoute,
     });
@@ -371,9 +398,9 @@ async function assertProductionReady(
   connection: PersistedInboundWebhookConnection,
   options: { requireValidMetaRoute: boolean },
 ): Promise<void> {
-  if (connection.parserRelease.status !== "certified") {
+  if (connection.parserRelease.provider !== connection.provider || !inboundParserProductionEligible(connection.parserRelease)) {
     throw new ConflictException(
-      "Certifique o parser antes de ativar o envio automatico",
+      "Certifique o parser antes de ativar o envio automatico. Esta versao da integracao nao e nativa validada ou foi retirada.",
     );
   }
 
@@ -390,10 +417,7 @@ async function assertProductionReady(
           active: true,
           validationStatus: validRouteStatus,
           metaBusinessConnectionId: { not: null },
-          metaReportingAccountId: { not: null },
-          metaConversionDestinationId: { not: null },
         },
-        select: { id: true },
       },
     },
   });
@@ -404,13 +428,29 @@ async function assertProductionReady(
     );
   }
 
-  if (
-    options.requireValidMetaRoute &&
-    activeChannels.some((channel) => channel.routes.length === 0)
-  ) {
-    throw new ConflictException(
-      "Todo canal ativo precisa de uma rota Meta valida",
-    );
+  if (options.requireValidMetaRoute) {
+    for (const channel of activeChannels) {
+      if (
+        !(connection.provider === "unnichat"
+          ? await unnichatChannelRoutable(
+              transaction,
+              await requireInboundWebhookChannel(
+                transaction,
+                connection.workspaceId,
+                channel.id,
+              ),
+            )
+          : await hasEligibleInboundMetaRoute(
+              transaction,
+              connection.workspaceId,
+              channel.routes,
+            ))
+      ) {
+        throw new ConflictException(
+          "Todo canal ativo precisa de uma rota Meta valida",
+        );
+      }
+    }
   }
 
   const activeReplay = await transaction.inboundWebhookReplayBatch.count({
@@ -421,7 +461,7 @@ async function assertProductionReady(
     },
   });
 
-  if (activeReplay > 0) {
+  if (activeReplay > 0 || (connection.provider === "meta_cloud" && await studentReplayDispatchUnsettled(transaction, connection.workspaceId, connection.id))) {
     throw new ConflictException(
       "Finalize o replay em andamento antes de ativar a producao",
     );

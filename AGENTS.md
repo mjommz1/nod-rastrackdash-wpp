@@ -16,3 +16,8 @@ Resumo operacional:
 6. Não reintroduzir Asaas/Guru/UAZAPI_ADMIN/license private key PalmUP
 
 Spec e plano: `docs/superpowers/`.
+## Notas de atualização para a comunidade
+
+Ao atualizar este produto, prepare também as notas no mesmo commit/PR do código. Leia [docs/RELEASE_NOTES_AI.md](docs/RELEASE_NOTES_AI.md) e use [docs/releases/TEMPLATE.json](docs/releases/TEMPLATE.json). Inclua benefício ao aluno, mudanças, correções, requisitos, guia com backup/migration/variáveis/preservação de customizações/verificação e recuperação. Sem versão definida, consolide em docs/releases/unreleased.json; não invente uma tag ou comprovação de teste. Marque incertezas PENDENTE: e nunca inclua segredos.
+
+Na Release autorizada do repositório oficial, inclua um único bloco JSON roadmap-release; a integração do Roadmap cria somente um rascunho para revisão administrativa. Não publicar tags/Releases/deploy/avisos sem autorização aplicável. Em clones de alunos, registrar notas locais não autoriza publicar avisos para toda a comunidade PalmUP. Preserve todas as regras de onboarding e licença já existentes.

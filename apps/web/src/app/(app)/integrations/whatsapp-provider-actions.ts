@@ -9,6 +9,7 @@ import {
 } from "@wpptrack/shared";
 import type { WhatsappConnectionEditMetadataDto } from "@wpptrack/shared";
 import { revalidatePath } from "next/cache";
+import { licenseLockedMessageFor } from "../../../lib/license-locked-message";
 import { serverApiFetch } from "../../../lib/server-api";
 
 export type WhatsappReceiverSecret = {
@@ -54,8 +55,8 @@ export async function createWhatsappConnectionAction(
       message: "Conexao salva. Use Testar antes de configurar o receiver.",
       connectionId: connection.id,
     };
-  } catch {
-    return failure("Nao foi possivel salvar a conexao WhatsApp.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel salvar a conexao WhatsApp.");
   }
 }
 
@@ -85,8 +86,8 @@ export async function testWhatsappConnectionAction(
           : `Teste concluido com status ${result.data.status}.`),
       connectionId,
     };
-  } catch {
-    return failure("Nao foi possivel testar a conexao WhatsApp.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel testar a conexao WhatsApp.");
   }
 }
 
@@ -117,8 +118,8 @@ export async function rotateWhatsappWebhookTokenAction(
         webhookUrl: `${result.data.webhookEndpoint}?token=${encodeURIComponent(result.data.webhookToken)}`,
       },
     };
-  } catch {
-    return failure("Nao foi possivel gerar o receiver desta conexao.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel gerar o receiver desta conexao.");
   }
 }
 
@@ -135,8 +136,8 @@ export async function deleteWhatsappConnectionAction(
     );
     revalidatePath(integrationsPath);
     return { ok: true, message: "Conexao excluida.", connectionId };
-  } catch {
-    return failure("Nao foi possivel excluir a conexao WhatsApp.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel excluir a conexao WhatsApp.");
   }
 }
 
@@ -191,8 +192,8 @@ export async function updateWhatsappConnectionAction(
     );
     revalidatePath(integrationsPath);
     return { ok: true, message: "Conexao atualizada.", connectionId };
-  } catch {
-    return failure("Nao foi possivel atualizar a conexao WhatsApp.");
+  } catch (error) {
+    return failure(licenseLockedMessageFor(error) ?? "Nao foi possivel atualizar a conexao WhatsApp.");
   }
 }
 

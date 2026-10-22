@@ -8,3 +8,5 @@ coverage/
 *.log
 .DS_Store
 apps/api/dist/
+
+*.tsbuildinfo

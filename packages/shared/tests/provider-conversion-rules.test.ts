@@ -172,10 +172,9 @@ describe("provider conversion rule contracts", () => {
       defaultValueCents: 250000,
     });
 
-    expect(parsed).toMatchObject({
-      defaultValueCents: 250000,
-      defaultCurrency: "BRL",
-    });
+    // Sem moeda = herdar a "Moeda das conversoes" do workspace.
+    expect(parsed).toMatchObject({ defaultValueCents: 250000 });
+    expect(parsed.defaultCurrency ?? null).toBeNull();
   });
 
   it("accepts InitiateCheckout message_phrase with fixed value (U1)", () => {
@@ -219,8 +218,8 @@ describe("provider conversion rule contracts", () => {
     expect(parsed).toMatchObject({
       valueMode: "fixed",
       defaultValueCents: 99900,
-      defaultCurrency: "BRL",
     });
+    expect(parsed.defaultCurrency ?? null).toBeNull();
   });
 
   it("accepts message_extracted checkout rules with an example and no fixed value", () => {
@@ -236,8 +235,8 @@ describe("provider conversion rule contracts", () => {
     expect(parsed).toMatchObject({
       valueMode: "message_extracted",
       exampleMessage: "Segue o link de pagamento de R$ 250,00",
-      defaultCurrency: "BRL",
     });
+    expect(parsed.defaultCurrency ?? null).toBeNull();
     expect(parsed).not.toHaveProperty("defaultValueCents", 0);
   });
 
@@ -583,10 +582,8 @@ describe("provider conversion rule contracts", () => {
       triggerType: "message_phrase",
       eventName: "AddToCart",
     });
-    expect(semValor).toMatchObject({
-      eventName: "AddToCart",
-      defaultCurrency: "BRL",
-    });
+    expect(semValor).toMatchObject({ eventName: "AddToCart" });
+    expect(semValor.defaultCurrency ?? null).toBeNull();
 
     const comValor = providerConversionRuleCreateInputSchema.parse({
       ...messageScope,
@@ -609,8 +606,28 @@ describe("provider conversion rule contracts", () => {
       triggerType: "provider_automation",
       eventName: "AddToCart",
       defaultValueCents: 12900,
-      defaultCurrency: "BRL",
     });
+    expect(parsed.defaultCurrency ?? null).toBeNull();
+  });
+
+  it("mantem a moeda escolhida na regra e aceita null = herdar o workspace", () => {
+    const usd = providerConversionRuleCreateInputSchema.parse({
+      ...channelScope,
+      triggerType: "provider_automation",
+      eventName: "Purchase",
+      defaultValueCents: 9900,
+      defaultCurrency: "usd",
+    });
+    expect(usd).toMatchObject({ defaultCurrency: "USD" });
+
+    const inherit = providerConversionRuleCreateInputSchema.parse({
+      ...channelScope,
+      triggerType: "provider_automation",
+      eventName: "Purchase",
+      defaultValueCents: 9900,
+      defaultCurrency: null,
+    });
+    expect(inherit.defaultCurrency).toBeNull();
   });
 
   it("aceita pedido enviado por tag sem nenhum campo de valor", () => {

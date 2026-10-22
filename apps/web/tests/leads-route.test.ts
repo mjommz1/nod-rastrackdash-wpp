@@ -148,7 +148,7 @@ describe("leads route", () => {
       "http://localhost:3333/leads/page?attribution=organic&since=2026-07-06&until=2026-07-12&page=1&pageSize=25",
       expect.objectContaining({ credentials: "include" }),
     );
-    expect(html).toContain("Exibindo conversas sem atribuicao");
+    expect(html).toContain("Leads novos sem anúncio (orgânicos)");
     expect(html).toContain('name="since" value="2026-07-06"');
     expect(html).toContain('name="until" value="2026-07-12"');
   });
@@ -286,5 +286,145 @@ describe("leads route", () => {
     expect(html).not.toContain("Rafael Costa");
     expect(html).not.toContain("Black Friday WhatsApp");
     expect(html).not.toContain("Remarketing 7 dias");
+  });
+});
+
+describe("leads route base (novos x voltaram)", () => {
+  function mockPage(body: Record<string, unknown>) {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [],
+          pagination: { page: 1, pageSize: 25, totalItems: 56, totalPages: 3 },
+          ...body,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  }
+
+  async function render(searchParams: Record<string, string>) {
+    const element = await LeadsPage({
+      searchParams: Promise.resolve(searchParams),
+    });
+    return renderToStaticMarkup(createElement("div", null, element));
+  }
+
+  it("names the default list as leads novos and shows organic leads as their own count", async () => {
+    mockPage({ attributionCounts: { paid: 50, organic: 6 } });
+
+    const html = await render({ since: "2026-10-14", until: "2026-10-14" });
+
+    expect(html).toContain("56 leads novos (1º contato no período)");
+    expect(html).toContain("Origem: todas");
+    expect(html).toContain(
+      'href="/leads?attribution=paid&amp;since=2026-10-14&amp;until=2026-10-14">50 de anúncio</a>',
+    );
+    expect(html).toContain(
+      'href="/leads?attribution=organic&amp;since=2026-10-14&amp;until=2026-10-14">6 orgânicos</a>',
+    );
+    expect(html).not.toContain("conversas reais");
+  });
+
+  it("matches the overview headline when the paid origin is selected", async () => {
+    mockPage({ attributionCounts: { paid: 56, organic: 6 } });
+
+    const html = await render({
+      attribution: "paid",
+      since: "2026-10-14",
+      until: "2026-10-14",
+    });
+
+    expect(html).toContain("56 leads novos (1º contato no período)");
+    expect(html).toContain("Origem: anúncio");
+    expect(html).not.toContain("orgânicos</a>");
+  });
+
+  it("asks the API for the leads that came back and says so", async () => {
+    mockPage({
+      pagination: { page: 1, pageSize: 25, totalItems: 6, totalPages: 1 },
+    });
+
+    const html = await render({
+      attribution: "paid",
+      base: "returning",
+      since: "2026-10-14",
+      until: "2026-10-14",
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://localhost:3333/leads/page?attribution=paid&since=2026-10-14&until=2026-10-14&base=returning&page=1&pageSize=25",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(html).toContain("6 leads que voltaram no período");
+    expect(html).toContain('<option value="returning" selected="">');
+  });
+
+  it("asks the API for the people with more than one conversation and says so", async () => {
+    mockPage({
+      pagination: { page: 1, pageSize: 25, totalItems: 9, totalPages: 1 },
+    });
+
+    const html = await render({
+      attribution: "paid",
+      base: "repeat",
+      since: "2026-10-08",
+      until: "2026-10-14",
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://localhost:3333/leads/page?attribution=paid&since=2026-10-08&until=2026-10-14&base=repeat&page=1&pageSize=25",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(html).toContain("9 leads com mais de uma conversa no período");
+    expect(html).toContain('<option value="repeat" selected="">');
+    expect(html).toContain(
+      "Leads que iniciaram mais de uma conversa por anúncio",
+    );
+  });
+
+  it("ignores an unknown base and falls back to leads novos", async () => {
+    mockPage({});
+
+    await render({ base: "everything", since: "2026-10-14" });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://localhost:3333/leads/page?since=2026-10-14&page=1&pageSize=25",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("offers the spreadsheet export of the applied filters when there are leads", async () => {
+    mockPage({
+      items: [
+        {
+          id: "lead_1",
+          workspaceId: "workspace_1",
+          name: "Mariana Alves",
+          phoneDisplay: "+55 11 99999-1020",
+          phoneHash: "phone_hash_1",
+          status: "active",
+          source: "uazapi",
+          labels: [],
+          campaignId: "cmp_1",
+          campaignName: "Black Friday WhatsApp",
+          adSetId: "adset_1",
+          adId: "ad_1",
+          lastEventName: "LeadSubmitted",
+          firstMessageAt: "2026-10-14T13:00:00.000Z",
+          lastMessageAt: "2026-10-14T13:10:00.000Z",
+          createdAt: "2026-10-14T13:00:00.000Z",
+          updatedAt: "2026-10-14T13:10:00.000Z",
+        },
+      ],
+      pagination: { page: 1, pageSize: 25, totalItems: 1, totalPages: 1 },
+    });
+
+    const html = await render({ since: "2026-10-14", until: "2026-10-14" });
+
+    expect(html).toContain('class="lead-export"');
+    expect(html).toContain("Exportar");
+    expect(html).toContain("NOD API");
+    expect(html).toContain("Conversa iniciada");
   });
 });

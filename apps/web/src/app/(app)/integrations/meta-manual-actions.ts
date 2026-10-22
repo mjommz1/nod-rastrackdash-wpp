@@ -7,6 +7,7 @@ import type {
   MetaOAuthDisconnectResultDto,
   MetaReportingAccountAdRoutingDto,
 } from "@wpptrack/shared";
+import { metaManualAssetDiscoverySchema } from "@wpptrack/shared";
 import { revalidatePath } from "next/cache";
 import { isApiRequestError, serverApiFetch } from "../../../lib/server-api";
 import type { InitialManualMetaSyncPeriod } from "./meta-manual-sync-period";
@@ -18,7 +19,18 @@ export type MetaManualActionResult = {
   configuration?: MetaManualConfigurationDto;
   testResult?: MetaManualConnectionTestResultDto;
   adRouting?: MetaReportingAccountAdRoutingDto;
+  palmupPairing?: MetaPalmupPairing;
+  palmupUnconfigured?: boolean;
 };
+
+// Only what the browser needs to open the PalmUP login and finish later.
+// The challenge stays inside authorizeUrl; the token never leaves the API.
+export type MetaPalmupPairing = {
+  pairingId: string;
+  authorizeUrl: string;
+};
+
+const PALMUP_PAIRING_ID_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 
 export async function disconnectMetaOAuthAction(
   workspaceId: string,
@@ -73,6 +85,95 @@ export async function createMetaManualCredentialAction(
     };
   } catch (error) {
     return failure(error, "Nao foi possivel validar este token na Meta.");
+  }
+}
+
+export async function startMetaPalmupConnectAction(): Promise<MetaManualActionResult> {
+  try {
+    const started = await serverApiFetch<{
+      pairingId?: unknown;
+      authorizeUrl?: unknown;
+    }>("/integrations/meta/manual/palmup-connect/start", {
+      method: "POST",
+      body: "{}",
+    });
+    const pairingId =
+      typeof started.pairingId === "string" &&
+      PALMUP_PAIRING_ID_PATTERN.test(started.pairingId)
+        ? started.pairingId
+        : null;
+    const authorizeUrl = httpsUrlOrNull(started.authorizeUrl);
+
+    if (!pairingId || !authorizeUrl) {
+      return {
+        ok: false,
+        message: "Nao foi possivel iniciar o login social PalmUP.",
+      };
+    }
+
+    return {
+      ok: true,
+      message:
+        "Autorize a Meta na aba da PalmUP e volte aqui para concluir a conexao.",
+      palmupPairing: { pairingId, authorizeUrl },
+    };
+  } catch (error) {
+    // 503 means PALMUP_META_BROKER_URL is empty on the API; the token path stays available.
+    if (isApiRequestError(error) && error.status === 503) {
+      return {
+        ok: false,
+        message:
+          "Login social PalmUP nao configurado neste servidor. Use o token permanente.",
+        palmupUnconfigured: true,
+      };
+    }
+
+    return failure(error, "Nao foi possivel iniciar o login social PalmUP.");
+  }
+}
+
+export async function completeMetaPalmupConnectAction(
+  pairingId: string,
+): Promise<MetaManualActionResult> {
+  if (!PALMUP_PAIRING_ID_PATTERN.test(pairingId)) {
+    return {
+      ok: false,
+      message: "Conexao PalmUP invalida. Inicie novamente.",
+    };
+  }
+
+  try {
+    const response = await serverApiFetch<unknown>(
+      "/integrations/meta/manual/palmup-connect/complete",
+      {
+        method: "POST",
+        body: JSON.stringify({ pairingId }),
+      },
+    );
+    revalidatePath("/integrations");
+    // Parsing strips any field outside the safe discovery DTO before it reaches the browser.
+    const parsed = metaManualAssetDiscoverySchema.safeParse(response);
+
+    if (!parsed.success) {
+      return {
+        ok: false,
+        message:
+          "Meta conectada, mas a resposta nao pode ser exibida. Recarregue a pagina e escolha o token salvo.",
+      };
+    }
+
+    const discovery = parsed.data as MetaManualAssetDiscoveryDto;
+
+    return {
+      ok: true,
+      message:
+        discovery.businesses.length > 0
+          ? "Meta conectada pela PalmUP e token protegido. Agora escolha a estrutura Meta."
+          : "Meta conectada pela PalmUP e token protegido. A Meta nao listou as BMs; informe o ID da estrutura.",
+      discovery,
+    };
+  } catch (error) {
+    return failure(error, "Nao foi possivel concluir o login social PalmUP.");
   }
 }
 
@@ -675,6 +776,19 @@ function optionalFormText(formData: FormData, key: string): string | null {
   const value = formData.get(key);
 
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function httpsUrlOrNull(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function failure(error: unknown, fallback: string): MetaManualActionResult {

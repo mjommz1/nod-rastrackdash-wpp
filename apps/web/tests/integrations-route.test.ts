@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { providerRule } from "./conversions-fixtures";
 import IntegrationsPage from "../src/app/(app)/integrations/page";
 import {
   metaAdAccountsForBusiness,
@@ -8,6 +9,11 @@ import {
 } from "../src/app/(app)/integrations/meta-assets-form";
 import { resolveMetaStatus } from "../src/app/(app)/integrations/meta-connection-state";
 import { metaReportingAccountsForBusiness } from "../src/app/(app)/integrations/meta-reporting-accounts-form";
+import {
+  baseConnection,
+  baseRule,
+  snapshotOf,
+} from "./support/pipedrive-fixtures";
 
 vi.mock("next/navigation", () => ({
   redirect: () => undefined,
@@ -26,332 +32,6 @@ describe("integrations route", () => {
   });
 
   it("renders whatsapp instances with connection actions", async () => {
-    /* const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            checkedAt: "2026-07-02T03:00:00.000Z",
-            providers: [
-              {
-                provider: "uazapi",
-                status: "connected",
-                checkedAt: "2026-07-02T03:00:00.000Z",
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify([
-            {
-              id: "wpp_1",
-              name: "Vendas",
-              provider: "uazapi",
-              billingStatus: "active",
-              providerInstanceId: "provider_instance_1",
-              checkoutUrl: null,
-              createdAt: "2026-07-02T03:00:00.000Z",
-            },
-            {
-              id: "wpp_2",
-              name: "Suporte",
-              provider: "uazapi",
-              billingStatus: "pending_payment",
-              providerInstanceId: null,
-              checkoutUrl: "https://sandbox.asaas.com/i/pay_2",
-              createdAt: "2026-07-02T03:00:00.000Z",
-            },
-          ]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "connected",
-            tokenType: "bearer",
-            scopes: ["ads_read", "business_management"],
-            expiresAt: null,
-            connectedAt: "2026-07-02T03:00:00.000Z",
-            selectedBusinessId: null,
-            selectedAdAccountId: null,
-            selectedPixelId: "pixel_1",
-            capiTokenConfigured: true,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "connected",
-            businesses: [
-              {
-                id: "business_1",
-                name: "BM Principal",
-                verificationStatus: "verified",
-              },
-              {
-                id: "business_2",
-                name: "BM Secundario",
-                verificationStatus: null,
-              },
-            ],
-            adAccounts: [
-              {
-                id: "act_1",
-                businessId: "business_1",
-                name: "Conta WhatsApp",
-                accountStatus: "active",
-                currency: "BRL",
-                timezoneName: "America/Sao_Paulo",
-              },
-              {
-                id: "act_2",
-                businessId: "business_2",
-                name: "Conta Outro BM",
-                accountStatus: "active",
-                currency: "USD",
-                timezoneName: "America/New_York",
-              },
-            ],
-            pixels: [
-              {
-                id: "pixel_1",
-                businessId: "business_1",
-                name: "Pixel Loja",
-                code: "<!-- Facebook Pixel Code --> <script>fbq('init', '123456789');</script><script src=\"https://connect.facebook.net/en_US/fbevents.js\"></script>",
-              },
-              {
-                id: "pixel_2",
-                businessId: "business_2",
-                name: "Pixel Outro BM",
-                code: "987654321",
-              },
-            ],
-            pages: [
-              {
-                id: "page_1",
-                businessId: "business_1",
-                name: "Pagina Facebook principal",
-              },
-              {
-                id: "page_2",
-                businessId: "business_2",
-                name: "Pagina Outro BM",
-              },
-            ],
-            conversionDestination: {
-              workspaceId: "workspace_1",
-              pixelId: "pixel_1",
-              pixelName: "Pixel Loja",
-              pageId: "page_1",
-              pageName: "Pagina Facebook principal",
-              status: "configured",
-              lastValidatedAt: "2026-07-02T03:00:00.000Z",
-              validationError: null,
-            },
-            reportingAccounts: [
-              {
-                id: "reporting_1",
-                workspaceId: "workspace_1",
-                businessId: "business_1",
-                businessName: "BM Principal",
-                adAccountId: "act_1",
-                adAccountName: "Conta WhatsApp",
-                currency: "BRL",
-                timezoneName: "America/Sao_Paulo",
-                active: true,
-                syncStatus: "synced",
-                lastSyncedAt: "2026-07-02T03:00:00.000Z",
-                syncError: null,
-              },
-            ],
-            selection: {
-              businessId: "business_1",
-              adAccountId: "act_1",
-              pixelId: "pixel_1",
-            },
-            lastSyncedAt: "2026-07-02T03:00:00.000Z",
-            syncError: null,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            activeInstances: 1,
-            pricePerInstanceCents: 9900,
-            nextInstanceAmountCents: 9900,
-            currency: "BRL",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "active",
-            planName: "Por instancia",
-            activeInstances: 2,
-            pricePerWhatsappInstanceCents: 9900,
-            monthlyAmountCents: 19800,
-            currentPeriodEnd: "2026-08-02T03:00:00.000Z",
-            asaasSubscriptionId: "sub_asaas_1",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            rangeLabel: "Ultimos 7 dias",
-            stages: [
-              {
-                key: "ctwa",
-                label: "CTWA",
-                value: 3,
-                detail: "Leads com origem de campanha Meta",
-              },
-              {
-                key: "webhook",
-                label: "Webhook",
-                value: 4,
-                detail: "Webhooks NOD API recebidos",
-              },
-              {
-                key: "lead",
-                label: "Lead",
-                value: 5,
-                detail: "Leads rastreados pelo WhatsApp",
-              },
-              {
-                key: "conversion_ready",
-                label: "CAPI pronta",
-                value: 6,
-                detail: "Eventos aguardando envio para Meta",
-              },
-              {
-                key: "meta_sent",
-                label: "Meta ACK",
-                value: 2,
-                detail: "Eventos enviados para Meta",
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            id: "workspace_1",
-            name: "Workspace",
-            slug: "workspace",
-            role: "owner",
-            platformRole: "platform_owner",
-            permissions: {
-              canInviteMembers: true,
-              canManageBilling: true,
-              canManageIntegrations: true,
-              canViewReports: true,
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            enabledModes: ["oauth"],
-            oauthEnabled: true,
-            manualEnabled: false,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            profile: null,
-            contract: {
-              id: "package_contract_1",
-              workspaceId: "workspace_1",
-              planId: "package_plan_1",
-              status: "active",
-              planName: "Pacote inicial",
-              planVersion: 1,
-              monthlyPriceCents: 5000,
-              includedWhatsappNumbers: 3,
-              occupiedWhatsappNumbers: 2,
-              billingMethod: "pix",
-              currentPeriodStart: "2026-07-01T00:00:00.000Z",
-              currentPeriodEnd: "2026-08-01T00:00:00.000Z",
-              graceEndsAt: null,
-              cancelAtPeriodEnd: false,
-              accessEndsAt: null,
-              fiscalStatus: "authorized",
-            },
-            availablePlans: [],
-            seats: {
-              capacity: 3,
-              occupied: 2,
-              available: 1,
-              reserved: 0,
-              active: 2,
-              suspended: 0,
-            },
-            invoices: [],
-            enforcementEnabled: false,
-            capabilities: {
-              packageBilling: true,
-              recurringCheckout: true,
-              lifecycle: true,
-              automaticInvoices: true,
-              uazapiProvisioning: true,
-              externalChannelEnforcement: false,
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            whatsappInstanceId: "wpp_1",
-            provider: "uazapi",
-            billingStatus: "active",
-            connectionStatus: "qr_required",
-            qrCode: "qr-code-text",
-            message: "Escaneie o QR Code",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            connectionMode: "oauth",
-            advancedRoutingEnabled: false,
-            unmappedActiveAccountCount: 1,
-            credentials: [],
-            businessConnections: [],
-            destinations: [],
-            reportingAccounts: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ); */
-
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const path = new URL(String(input)).pathname;
       const response = (body: unknown, status = 200) =>
@@ -378,63 +58,54 @@ describe("integrations route", () => {
     });
     const html = renderToStaticMarkup(createElement("div", null, element));
 
+    // Hub layout: tabs by category, cards with state, one modal per provider.
     expect(html).toContain("Central de integracoes");
-    expect(html).toContain("Mapa das conexoes");
-    expect(html).toContain('aria-label="Atalhos das integracoes"');
-    expect(html).toContain('href="#integracao-meta"');
-    expect(html).toContain('href="#integracao-whatsapp"');
-    expect(html).toContain('href="#integracao-fluxo"');
-    expect(html).toContain('id="integracao-meta"');
-    expect(html).toContain('id="integracao-whatsapp"');
-    expect(html).toContain('id="integracao-fluxo"');
-    expect(
-      html.match(/class="integration-domain-section [^"]+"/g),
-    ).toHaveLength(3);
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/integrations/whatsapp/instances",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/integrations/meta/connection",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/integrations/meta/assets",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/integrations/meta/oauth/advanced",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/billing/whatsapp-instance/quote",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/billing/subscription",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/integrations/pipeline",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/billing/package/state",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/workspaces/current",
-      expect.objectContaining({ credentials: "include" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3333/integrations/whatsapp/instances/wpp_1/status",
-      expect.objectContaining({ credentials: "include" }),
-    );
+    expect(html).not.toContain("Mapa das conexoes");
+    expect(html).not.toContain('aria-label="Atalhos das integracoes"');
+    expect(html).toContain('role="tablist"');
+    for (const tab of ["WhatsApp", "Atendimento e vendas", "Anúncios", "CRM"]) {
+      expect(html).toContain(`<span>${tab}</span>`);
+    }
+    for (const id of [
+      "integracao-whatsapp",
+      "integracao-atendimento",
+      "integracao-anuncios",
+      "integracao-crm",
+      "integracao-fluxo",
+    ]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    expect(html).toContain('aria-label="Gerenciar Meta Ads"');
+    expect(html).toContain('data-integration="meta" data-state="active"');
+    expect(html).toContain('aria-label="Conectar Kommo"');
+    expect(html).toContain("Ativos");
+    expect(html).toContain("Disponíveis");
+
+    for (const path of [
+      "/integrations/whatsapp/instances",
+      "/integrations/meta/connection",
+      "/integrations/meta/assets",
+      "/integrations/meta/oauth/advanced",
+      "/integrations/pipeline",
+      "/workspaces/current",
+      "/integrations/whatsapp-connections",
+    ]) {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `http://localhost:3333${path}`,
+        expect.objectContaining({ credentials: "include" }),
+      );
+    }
+    // Student edition: no SaaS billing endpoints behind the hub.
+    for (const call of vi.mocked(globalThis.fetch).mock.calls) {
+      expect(String(call[0])).not.toContain("/billing/");
+    }
+
+    // The Meta modal (notice reopens it) keeps the former Meta section.
     expect(html).toContain("Meta conectado");
     expect(html).toContain("Conta adicionada");
     expect(html).toContain("A conta de anuncio foi adicionada aos relatorios.");
-    expect(html).toContain("Trocar conta Meta");
-    expect(html).not.toContain("Reconectar Meta");
+    expect(html).toContain("Atualizar ativos Meta");
+    expect(html).not.toContain("Trocar conta Meta");
     expect(html).toContain("pixel_1");
     expect(html).toContain("BM Principal");
     expect(html).toContain("Conta WhatsApp");
@@ -458,7 +129,6 @@ describe("integrations route", () => {
     expect(html).not.toContain('name="accessToken"');
     expect(html).not.toContain("Salvar token CAPI");
     expect(html).not.toContain("Remover token CAPI");
-    expect(html).not.toContain("EAAB-capi-token-secret");
     expect(html).toContain('name="businessId"');
     expect(html).toContain('name="businessName"');
     expect(html).toContain('name="adAccountId"');
@@ -467,43 +137,128 @@ describe("integrations route", () => {
     expect(html).toContain('name="pixelName"');
     expect(html).toContain('name="pageName"');
     expect(html).not.toContain("Salvar selecao Meta");
+
+    // The environment-based Uazapi instance lives in the Uazapi modal.
+    expect(html).toContain('data-integration="uazapi_byo" data-state="active"');
     expect(html).toContain("Vendas");
     expect(html).toContain("provider_instance_1");
-    expect(html).toContain("Conectar WhatsApp");
-    expect(html).toContain("QR pendente");
-    expect(html).toContain("qr-code-text");
-    expect(html).toContain("Escaneie o QR Code");
-    expect(html).toContain("wpp_1");
     expect(html).toContain("Suporte");
-    expect(html).toContain("ID NOD API ainda nao emitido");
-    expect(html).toContain("Pagamento pendente");
-    expect(html).toContain("Pagar agora");
-    expect(html).toContain('href="https://sandbox.asaas.com/i/pay_2"');
+    expect(html).toContain("Aguardando ativação");
+    expect(html).not.toContain("Pagar agora");
     expect(html).not.toContain("Adicionar instancia");
-    expect(html).toContain("Pacote WhatsApp");
-    expect(html).toContain("Pacote inicial");
-    expect(html).toContain("Numeros incluidos");
-    expect(html).toContain("Gerenciar assinatura e QR");
-    expect(html).toContain("99,00");
-    expect(html).not.toContain(
-      "Ao continuar, o backend vai gerar uma cobranca de R$\u00a099,00 no Asaas antes da conexao.",
-    );
-    expect(html).toContain("Conexoes gerenciadas pelo pacote");
-    expect(html).toContain("Abrir assinatura");
-    expect(html).toContain("Assinatura");
-    expect(html).toContain("Por instancia");
-    expect(html).toContain("198,00");
-    expect(html).toContain("sub_asaas_1");
-    expect(html).toContain("Antecipada via Asaas");
+    expect(html).not.toContain("Abrir assinatura");
+
+    // Pipeline section stays below the hub.
     expect(html).toContain("Leads com origem de campanha Meta");
     expect(html).toContain("Webhooks NOD API recebidos");
     expect(html).toContain("Eventos enviados para Meta");
     expect(html).toContain("Ver diagnostico");
     expect(html).toContain("API conectada");
-    expect(html).toContain("3");
-    expect(html).toContain("4");
-    expect(html).toContain("2");
     expect(html).not.toContain("aguardando dados");
+  });
+
+  it("offers only the student providers and no SaaS-only cards", async () => {
+    mockWave7IntegrationsFetch({ canManage: true });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+    const cardIds = [...html.matchAll(/data-integration="([^"]+)"/g)].map(
+      (match) => match[1],
+    );
+
+    expect([...new Set(cardIds)].sort()).toEqual(
+      [
+        "kommo",
+        "meta",
+        "nod_api",
+        "payt",
+        "pipedrive",
+        "umbler",
+        "uazapi_byo",
+        "waha",
+        "zapi",
+      ].sort(),
+    );
+    for (const absent of [
+      "unnichat",
+      "gohighlevel",
+      "guimo",
+      "whatsapp-qr",
+    ]) {
+      expect(html).not.toContain(`data-integration="${absent}"`);
+    }
+    // Payt has no connection: its card explains the rule flow in Conversões.
+    expect(html).toContain('src="/integrations/payt.svg"');
+    expect(html).toContain('data-integration="payt" data-state="available"');
+    expect(html).toContain("A Payt não tem conexão própria");
+    expect(html).toContain("/conversions?nova=automation_payt");
+    expect(html).toContain("Criar regra de venda da Payt");
+    // Official logos with a fallback for missing files.
+    expect(html).toContain('src="/integrations/umbler.svg"');
+    expect(html).toContain('src="/integrations/kommo.png"');
+    expect(html).toContain('src="/integrations/uazapi.svg"');
+    expect(html).not.toContain("/billing/package");
+  });
+
+  it("shows the Unnichat card when the API offers it, with the number field in its modal", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/integrations/inbound-webhooks/capabilities": {
+          enabled: true,
+          providers: [
+            {
+              provider: "umbler",
+              parserVersion: "umbler/v1",
+              parserReleaseStatus: "observation_only",
+              creationEnabled: true,
+            },
+            {
+              provider: "unnichat",
+              parserVersion: "unnichat/v1",
+              parserReleaseStatus: "certified",
+              creationEnabled: true,
+            },
+          ],
+        },
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain('data-integration="unnichat" data-state="available"');
+    expect(html).toContain('src="/integrations/unnichat.png"');
+    expect(html).toContain("Conectar Unnichat");
+    expect(html).toContain('name="connectedPhone"');
+    expect(html).toContain("Número de WhatsApp do cliente");
+    expect(html).toContain('<input type="hidden" name="provider" value="unnichat"/>');
+    // The other providers' forms do not ask for a number.
+    expect(html.match(/name="connectedPhone"/g)).toHaveLength(1);
+  });
+
+  it("shows the Payt card as active once a sale rule exists and links to Conversões", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/conversion-rules/providers": [
+          paytRuleFixture("rule_payt_1", true),
+          paytRuleFixture("rule_payt_2", false),
+        ],
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain('data-integration="payt" data-state="active"');
+    expect(html).toContain("Recebendo vendas");
+    expect(html).toContain("2 regras");
+    expect(html).toContain("2 regras de venda configuradas");
+    expect(html).toContain("Gerenciar regras da Payt");
+    expect(html).not.toContain("Criar regra de venda da Payt");
+    // The rule is not a connection: no inbound panel is asked for Payt.
+    expect(html).not.toContain("Criar conexão Payt");
   });
 
   it("shows the external WhatsApp source without instance sales or false API errors", async () => {
@@ -709,164 +464,6 @@ describe("integrations route", () => {
   });
 
   it("hides integration mutation actions for workspace members", async () => {
-    /* const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            checkedAt: "2026-07-02T03:00:00.000Z",
-            providers: [
-              {
-                provider: "uazapi",
-                status: "connected",
-                checkedAt: "2026-07-02T03:00:00.000Z",
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify([
-            {
-              id: "wpp_1",
-              name: "Vendas",
-              provider: "uazapi",
-              billingStatus: "active",
-              providerInstanceId: "provider_instance_1",
-              checkoutUrl: null,
-              createdAt: "2026-07-02T03:00:00.000Z",
-            },
-          ]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "connected",
-            tokenType: "bearer",
-            scopes: ["ads_read"],
-            expiresAt: null,
-            connectedAt: "2026-07-02T03:00:00.000Z",
-            selectedBusinessId: "business_1",
-            selectedAdAccountId: "act_1",
-            selectedPixelId: "pixel_1",
-            capiTokenConfigured: true,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "connected",
-            businesses: [
-              {
-                id: "business_1",
-                name: "BM Principal",
-                verificationStatus: null,
-              },
-            ],
-            adAccounts: [
-              {
-                id: "act_1",
-                businessId: "business_1",
-                name: "Conta WhatsApp",
-                accountStatus: null,
-                currency: "BRL",
-                timezoneName: null,
-              },
-            ],
-            pixels: [
-              {
-                id: "pixel_1",
-                businessId: "business_1",
-                name: "Pixel Loja",
-                code: "123456789",
-              },
-            ],
-            selection: {
-              businessId: "business_1",
-              adAccountId: "act_1",
-              pixelId: "pixel_1",
-            },
-            lastSyncedAt: "2026-07-02T03:00:00.000Z",
-            syncError: null,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            activeInstances: 1,
-            pricePerInstanceCents: 9900,
-            nextInstanceAmountCents: 9900,
-            currency: "BRL",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "active",
-            planName: "Por instancia",
-            activeInstances: 1,
-            pricePerWhatsappInstanceCents: 9900,
-            monthlyAmountCents: 9900,
-            currentPeriodEnd: null,
-            asaasSubscriptionId: null,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            rangeLabel: "Ultimos 7 dias",
-            stages: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            id: "workspace_1",
-            name: "Workspace",
-            slug: "workspace",
-            role: "member",
-            permissions: {
-              canInviteMembers: false,
-              canManageBilling: false,
-              canManageIntegrations: false,
-              canViewReports: true,
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            whatsappInstanceId: "wpp_1",
-            provider: "uazapi",
-            billingStatus: "active",
-            connectionStatus: "connected",
-            qrCode: null,
-            message: "WhatsApp conectado",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ); */
-
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const path = new URL(String(input)).pathname;
       const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -888,75 +485,38 @@ describe("integrations route", () => {
 
     expect(html).toContain("Contas para relatorios");
     expect(html).toContain("Vendas");
-    expect(html).toContain("Ativa");
-    expect(html).toContain("Nao vinculada");
     expect(html).toContain("Sem permissao para alterar destino Meta");
     expect(html).toContain("Sem permissao para alterar contas de relatorio");
     expect(html).not.toContain("Escopos");
     expect(html).not.toContain("Token CAPI");
     expect(html).not.toContain("Salvar token CAPI");
     expect(html).not.toContain("Remover token CAPI");
-    expect(html).toContain("Sem permissao para adicionar instancias");
     expect(html).toContain("Aguardando eventos reais");
-    expect(html).not.toContain("pendente");
     expect(html).not.toContain("sem dados");
     expect(html).not.toContain("Salvar selecao Meta");
-    expect(html).not.toContain("Adicionar instancia");
-    expect(html).not.toContain("Conectar WhatsApp");
+    // Members read the hub but never mutate: no create/connect/refresh forms.
+    expect(html).not.toContain("Atualizar ativos Meta");
+    expect(html).not.toContain("Salvar conexao");
+    expect(html).not.toContain('name="baseUrl"');
+    expect(html).not.toContain("Gerar URL de integração");
+    expect(html).not.toContain("Excluir");
     expect(html).not.toContain("Ver diagnostico");
     expect(html).not.toContain("provedores");
+    // Kommo is owner-only on the API: members only see why.
+    expect(html).toContain("Somente o dono da conta conecta CRMs");
+    expect(html).toContain("Sem acesso");
   });
 
   it("renders unavailable states without visual fallback providers or fake pipeline metrics", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(
+    // Path-based (not call-order based): every endpoint fails, whatever the
+    // page reads and in whatever order.
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
         new Response(JSON.stringify({ message: "unavailable" }), {
           status: 503,
           headers: { "Content-Type": "application/json" },
         }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: "unavailable" }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: "unavailable" }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: "unavailable" }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: "unavailable" }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: "unavailable" }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: "unavailable" }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: "unavailable" }), {
-          status: 503,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
+    );
 
     const element = await IntegrationsPage({});
     const html = renderToStaticMarkup(createElement("div", null, element));
@@ -980,129 +540,6 @@ describe("integrations route", () => {
   });
 
   it("renders unknown integration statuses as explicit unknown states", async () => {
-    /* const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            checkedAt: "2026-07-02T03:00:00.000Z",
-            providers: [
-              {
-                provider: "uazapi",
-                status: "rate_limited",
-                checkedAt: "2026-07-02T03:00:00.000Z",
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify([
-            {
-              id: "wpp_1",
-              name: "Vendas",
-              provider: "uazapi",
-              billingStatus: "provisioning_hold",
-              providerInstanceId: null,
-              checkoutUrl: null,
-              createdAt: "2026-07-02T03:00:00.000Z",
-            },
-          ]),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "sync_paused",
-            tokenType: "bearer",
-            scopes: [],
-            expiresAt: null,
-            connectedAt: null,
-            selectedBusinessId: null,
-            selectedAdAccountId: null,
-            selectedPixelId: null,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "sync_paused",
-            businesses: [],
-            adAccounts: [],
-            pixels: [],
-            selection: {
-              businessId: null,
-              adAccountId: null,
-              pixelId: null,
-            },
-            lastSyncedAt: null,
-            syncError: null,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            activeInstances: 1,
-            pricePerInstanceCents: 9900,
-            nextInstanceAmountCents: 9900,
-            currency: "BRL",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "manual_review",
-            planName: "Por instancia",
-            activeInstances: 1,
-            pricePerWhatsappInstanceCents: 9900,
-            monthlyAmountCents: 9900,
-            currentPeriodEnd: null,
-            asaasSubscriptionId: null,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            rangeLabel: "Ultimos 7 dias",
-            stages: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            id: "workspace_1",
-            name: "Workspace",
-            slug: "workspace",
-            role: "owner",
-            platformRole: "platform_owner",
-            permissions: {
-              canInviteMembers: true,
-              canManageBilling: true,
-              canManageIntegrations: true,
-              canViewReports: true,
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ); */
-
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const path = new URL(String(input)).pathname;
       const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -1113,6 +550,7 @@ describe("integrations route", () => {
       if (path === "/integrations/meta/assets") return response({ workspaceId: "workspace_1", status: "sync_paused", businesses: [], adAccounts: [], pixels: [], selection: { businessId: null, adAccountId: null, pixelId: null }, lastSyncedAt: null, syncError: null });
       if (path === "/integrations/pipeline") return response({ workspaceId: "workspace_1", rangeLabel: "Ultimos 7 dias", stages: [] });
       if (path === "/workspaces/current") return response({ id: "workspace_1", name: "Workspace", slug: "workspace", role: "owner", platformRole: "platform_owner", permissions: { canInviteMembers: true, canManageBilling: true, canManageIntegrations: true, canViewReports: true } });
+      if (path === "/integrations/meta/capabilities") return response({ enabledModes: ["oauth"], oauthEnabled: true, manualEnabled: false });
       if (path === "/integrations/whatsapp-connections") return response([]);
       return response({ message: "unavailable" }, 503);
     });
@@ -1122,6 +560,8 @@ describe("integrations route", () => {
 
     expect(html).toContain("Meta com status desconhecido");
     expect(html).toContain("Status desconhecido");
+    // An unknown Meta status never looks connected on the hub card.
+    expect(html).toContain('data-integration="meta" data-state="available"');
     expect(html).not.toContain("rate_limited");
     expect(html).not.toContain("sync_paused");
     expect(html).not.toContain("provisioning_hold");
@@ -1129,112 +569,6 @@ describe("integrations route", () => {
   });
 
   it("renders stale Meta asset selections as resync-required states", async () => {
-    /* const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            checkedAt: "2026-07-02T03:00:00.000Z",
-            providers: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "connected",
-            tokenType: "bearer",
-            scopes: ["ads_read"],
-            expiresAt: null,
-            connectedAt: "2026-07-02T03:00:00.000Z",
-            selectedBusinessId: "business_old",
-            selectedAdAccountId: "act_old",
-            selectedPixelId: "pixel_old",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "connected",
-            businesses: [{ id: "business_new", name: "BM Nova" }],
-            adAccounts: [{ id: "act_new", name: "Conta Nova" }],
-            pixels: [{ id: "pixel_new", name: "Pixel Novo", code: "999" }],
-            selection: {
-              businessId: "business_old",
-              adAccountId: "act_old",
-              pixelId: "pixel_old",
-            },
-            lastSyncedAt: "2026-07-02T03:00:00.000Z",
-            syncError: null,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            activeInstances: 0,
-            pricePerInstanceCents: 9900,
-            nextInstanceAmountCents: 9900,
-            currency: "BRL",
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            status: "active",
-            planName: "Por instancia",
-            activeInstances: 0,
-            pricePerWhatsappInstanceCents: 9900,
-            monthlyAmountCents: 0,
-            currentPeriodEnd: null,
-            asaasSubscriptionId: null,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId: "workspace_1",
-            rangeLabel: "Ultimos 7 dias",
-            stages: [],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            id: "workspace_1",
-            name: "Workspace",
-            slug: "workspace",
-            role: "owner",
-            permissions: {
-              canInviteMembers: true,
-              canManageBilling: true,
-              canManageIntegrations: true,
-              canViewReports: true,
-            },
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ); */
-
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const path = new URL(String(input)).pathname;
       const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -1242,7 +576,7 @@ describe("integrations route", () => {
       if (path === "/integrations/health") return response({ checkedAt: "2026-07-02T03:00:00.000Z", providers: [] });
       if (path === "/integrations/whatsapp/instances") return response([]);
       if (path === "/integrations/meta/connection") return response({ workspaceId: "workspace_1", status: "connected", tokenType: "bearer", scopes: ["ads_read"], expiresAt: null, connectedAt: "2026-07-02T03:00:00.000Z", selectedBusinessId: "business_old", selectedAdAccountId: "act_old", selectedPixelId: "pixel_old" });
-      if (path === "/integrations/meta/assets") return response({ workspaceId: "workspace_1", status: "connected", businesses: [{ id: "business_new", name: "BM Nova" }], adAccounts: [{ id: "act_new", name: "Conta Nova" }], pixels: [{ id: "pixel_new", name: "Pixel Novo", code: "999" }], selection: { businessId: "business_old", adAccountId: "act_old", pixelId: "pixel_old" }, lastSyncedAt: "2026-07-02T03:00:00.000Z", syncError: null });
+      if (path === "/integrations/meta/assets") return response({ workspaceId: "workspace_1", status: "connected", businesses: [{ id: "business_new", name: "BM Nova", verificationStatus: null }], adAccounts: [{ id: "act_new", businessId: "business_new", name: "Conta Nova", accountStatus: null, currency: "BRL", timezoneName: null }], pixels: [{ id: "pixel_new", businessId: "business_new", name: "Pixel Novo", code: "999" }], selection: { businessId: "business_old", adAccountId: "act_old", pixelId: "pixel_old" }, lastSyncedAt: "2026-07-02T03:00:00.000Z", syncError: null });
       if (path === "/integrations/pipeline") return response({ workspaceId: "workspace_1", rangeLabel: "Ultimos 7 dias", stages: [] });
       if (path === "/workspaces/current") return response({ id: "workspace_1", name: "Workspace", slug: "workspace", role: "owner", permissions: { canInviteMembers: true, canManageBilling: true, canManageIntegrations: true, canViewReports: true } });
       if (path === "/integrations/meta/capabilities") return response({ enabledModes: ["oauth"], oauthEnabled: true, manualEnabled: false });
@@ -1544,11 +878,13 @@ describe("integrations route", () => {
       expect(requestedPaths).toContain(
         "/integrations/inbound-webhooks/connection_wave7/channels",
       );
-      expect(html).toContain("Webhooks de plataformas WhatsApp");
+      expect(html).toContain("Suas conexões Umbler Talk");
       expect(html).toContain("Gatilhos de conversao");
-      expect(html).toContain("Central disponivel");
-      expect(html).toContain('href="/settings#whatsapp-triggers"');
-      expect(html).toContain("Gerenciar gatilhos");
+      expect(html).toContain("Regras disponíveis");
+      expect(html).toContain('href="/conversions"');
+      expect(html).toContain("Abrir Conversões");
+      expect(html).not.toContain("whatsapp-triggers");
+      expect(html).not.toContain("Gerenciar gatilhos");
       expect(html).not.toContain("Qualificados e compras");
       expect(html).toContain("Umbler Talk");
       expect(html).toContain("Umbler Workspace Atual");
@@ -1564,7 +900,7 @@ describe("integrations route", () => {
       expect(html).not.toContain("Conta Foreign");
 
       if (canManage) {
-        expect(html).toContain("Adicionar conexao");
+        expect(html).toContain("Adicionar conexão");
         expect(html).toContain("Gerar nova URL");
         expect(html).toContain("Pausar envio");
         expect(html).toContain("Adicionar rota");
@@ -1579,6 +915,402 @@ describe("integrations route", () => {
       }
     },
   );
+
+  it("moves Kommo from Settings to the hub CRM tab for the owner", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/auth/me": { user: { id: "user_owner" } },
+        "/workspaces/workspace_current/kommo/connections": [],
+        "/license-client/status": {
+          status: "active",
+          softLock: false,
+          hardLock: false,
+          usable: true,
+          expiresAt: null,
+          validUntil: null,
+          source: "cache",
+        },
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html.match(/data-testid="kommo-crm-manager"/g)).toHaveLength(1);
+    expect(html).toContain('id="crm-configurado"');
+    expect(html).not.toContain("0 conexão(ões)");
+    expect(html).toContain('data-integration="kommo" data-state="available"');
+    expect(html).toContain('aria-label="Conectar Kommo"');
+    expect(html).not.toContain("Somente o dono da conta conecta CRMs");
+    expect(html).not.toContain("Licença bloqueada: criar, editar");
+  });
+
+  const activeLicense = {
+    status: "active",
+    softLock: false,
+    hardLock: false,
+    usable: true,
+    expiresAt: null,
+    validUntil: null,
+    source: "cache",
+  };
+  const blockedLicense = {
+    status: "blocked",
+    softLock: true,
+    hardLock: true,
+    usable: false,
+    expiresAt: null,
+    validUntil: null,
+    source: "cache",
+    locked: true,
+    lockReason: "revoked",
+  };
+
+  it("offers Pipedrive in the hub CRM tab for the owner, always available (no pilot gate)", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/auth/me": { user: { id: "user_owner" } },
+        "/workspaces/workspace_current/kommo/connections": [],
+        "/workspaces/workspace_current/pipedrive/connections": [],
+        "/license-client/status": activeLicense,
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html.match(/data-testid="pipedrive-crm-manager"/g)).toHaveLength(1);
+    expect(html).toContain('id="crm-configurado-pipedrive"');
+    expect(html).toContain('data-integration="pipedrive" data-state="available"');
+    expect(html).toContain('aria-label="Conectar Pipedrive"');
+    expect(html).toContain('src="/integrations/pipedrive.svg"');
+    expect(html).toContain("Nova conexão");
+    expect(html).not.toContain("0 conexão(ões)");
+    expect(html).not.toContain("Somente o dono da conta conecta CRMs");
+    expect(html).not.toContain("Licença bloqueada: criar, editar, pausar, gerar URL");
+  });
+
+  it("lists an existing Pipedrive connection with its rule and never renders the token", async () => {
+    const snapshot = snapshotOf(baseConnection);
+    const base = "/workspaces/workspace_current/pipedrive/connections";
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/auth/me": { user: { id: "user_owner" } },
+        "/workspaces/workspace_current/kommo/connections": [],
+        [base]: [{ ...snapshot, workspaceId: "workspace_current" }],
+        [`${base}/${baseConnection.id}`]: {
+          ...snapshot,
+          workspaceId: "workspace_current",
+        },
+        [`${base}/${baseConnection.id}/rules`]: [baseRule],
+        "/license-client/status": activeLicense,
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain('data-integration="pipedrive" data-state="active"');
+    expect(html).toContain("Pipedrive principal");
+    expect(html).toContain("Ganho do negócio");
+    expect(html).toContain("Subdomínio verificado: suaempresa");
+    // The token field is write-only: it never comes back with a value.
+    expect(html).not.toMatch(/name="apiToken"[^>]*value=/);
+    expect(html).not.toMatch(/value="[^"]*"[^>]*name="apiToken"/);
+  });
+
+  it("shows a load failure of the Pipedrive connections instead of an empty CRM", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/auth/me": { user: { id: "user_owner" } },
+        "/workspaces/workspace_current/kommo/connections": [],
+        "/license-client/status": activeLicense,
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain("Não foi possível carregar as conexões Pipedrive");
+    expect(html).not.toContain("Nenhuma conexão Pipedrive.");
+  });
+
+  it("shows the license lock inside the Pipedrive modal when the license is blocked", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/auth/me": { user: { id: "user_owner" } },
+        "/workspaces/workspace_current/kommo/connections": [],
+        "/workspaces/workspace_current/pipedrive/connections": [],
+        "/license-client/status": blockedLicense,
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain("Licença bloqueada: criar, editar, pausar, gerar URL");
+  });
+
+  it("opens the Pipedrive modal from ?abrir=pipedrive and shows members the owner-only note", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/auth/me": { user: { id: "user_owner" } },
+        "/workspaces/workspace_current/kommo/connections": [],
+        "/workspaces/workspace_current/pipedrive/connections": [],
+      },
+    });
+
+    const element = await IntegrationsPage({
+      searchParams: Promise.resolve({ abrir: "pipedrive" }),
+    });
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toMatch(
+      /<div class="app-modal-layer" data-state="open"><div class="app-modal-backdrop"[^>]*><\/div><div class="app-modal app-modal-wide"[^>]*id="integration-modal-pipedrive"/,
+    );
+    expect(html).toMatch(/id="integrations-tab-crm"[^>]*aria-selected="true"/);
+
+    vi.restoreAllMocks();
+    mockWave7IntegrationsFetch({
+      canManage: false,
+      extraResponses: { "/auth/me": { user: { id: "user_member" } } },
+    });
+    const memberHtml = renderToStaticMarkup(
+      createElement("div", null, await IntegrationsPage({})),
+    );
+    expect(memberHtml).toContain("Somente o dono da conta conecta CRMs");
+    expect(memberHtml).not.toContain('data-testid="pipedrive-crm-manager"');
+  });
+
+  it("shows the license lock inside the Kommo modal when the license is blocked", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/auth/me": { user: { id: "user_owner" } },
+        "/workspaces/workspace_current/kommo/connections": [],
+        "/license-client/status": {
+          status: "blocked",
+          softLock: true,
+          hardLock: true,
+          usable: false,
+          expiresAt: null,
+          validUntil: null,
+          source: "cache",
+          locked: true,
+          lockReason: "revoked",
+        },
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain("Licença bloqueada: criar, editar, pausar");
+  });
+
+  it("scopes each provider modal to its own connections and keeps removal in the student provider flow", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/integrations/whatsapp-connections": [
+          {
+            id: "connection_waha",
+            name: "WAHA Comercial",
+            displayName: null,
+            provider: "waha",
+            status: "active",
+            lastHealthStatus: null,
+            lastHealthCheckedAt: null,
+            createdAt: "2026-07-02T03:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain('data-integration="waha" data-state="active"');
+    expect(html).toContain("WAHA Comercial");
+    // Removing a number is the provider "Excluir" flow, never package billing.
+    expect(html).toContain("Excluir");
+    expect(html).not.toContain("/billing/package");
+    expect(html).not.toContain("Remover QR");
+    // Scoped modals: the provider is fixed per card, no provider picker.
+    expect(html).toContain('name="provider" value="uazapi_byo"');
+    // WAHA is "Em breve": existing connection manageable, no create form.
+    expect(html).not.toContain('name="provider" value="waha"');
+    expect(html).toContain("Novas conexões deste provedor estão em breve");
+    expect(html).not.toContain("<span class=\"field-label\">Provedor</span>");
+  });
+
+  it("opens the Kommo modal from ?abrir=kommo on the server render", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/auth/me": { user: { id: "user_owner" } },
+        "/workspaces/workspace_current/kommo/connections": [],
+      },
+    });
+
+    const element = await IntegrationsPage({
+      searchParams: Promise.resolve({ abrir: "kommo" }),
+    });
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toMatch(
+      /<div class="app-modal-layer" data-state="open"><div class="app-modal-backdrop"[^>]*><\/div><div class="app-modal app-modal-wide"[^>]*id="integration-modal-kommo"/,
+    );
+    expect(html).toMatch(/id="integrations-tab-crm"[^>]*aria-selected="true"/);
+  });
+
+  it("shows members only the owner-only note in the Kommo modal", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: false,
+      extraResponses: { "/auth/me": { user: { id: "user_member" } } },
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain("Somente o dono da conta conecta CRMs");
+    expect(html).not.toContain('data-testid="kommo-crm-manager"');
+    expect(html).not.toContain("0 conexão(ões)");
+  });
+
+  it("keeps inbound cards and warns on both tabs when the inbound API fails", async () => {
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {},
+    });
+    const original = vi.mocked(globalThis.fetch).getMockImplementation()!;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/integrations/inbound-webhooks/capabilities") {
+        return jsonResponse({ message: "unavailable" }, 503);
+      }
+      return original(input, init);
+    });
+
+    const element = await IntegrationsPage({});
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    for (const id of ["umbler", "gupshup", "meta_cloud", "data_crazy"]) {
+      expect(html).toContain(`data-integration="${id}" data-state="available"`);
+    }
+    expect(html).toContain("Não foi possível verificar");
+    const banners = html.match(/Algumas conexões não carregaram/g) ?? [];
+    expect(banners).toHaveLength(2);
+  });
+
+  it("disables WhatsApp and webhook write controls while the license is locked", async () => {
+    const lockedStatus = {
+      status: "blocked",
+      softLock: true,
+      hardLock: true,
+      usable: false,
+      expiresAt: null,
+      validUntil: null,
+      source: "cache",
+      locked: true,
+      lockReason: "revoked",
+    };
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/license-client/status": lockedStatus,
+        "/integrations/whatsapp-connections": [
+          {
+            id: "connection_waha",
+            name: "WAHA Comercial",
+            displayName: null,
+            provider: "waha",
+            status: "active",
+            lastHealthStatus: null,
+            lastHealthCheckedAt: null,
+            createdAt: "2026-07-02T03:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    const locked = renderToStaticMarkup(
+      createElement("div", null, await IntegrationsPage({})),
+    );
+
+    expect(locked).toContain(
+      "Licença bloqueada: criar, testar, editar e excluir conexões está",
+    );
+    expect(locked).toContain(
+      "Licença bloqueada: criar, alterar e remover conexões está",
+    );
+    expect(locked.match(/<fieldset class="license-lock-scope" disabled=""/g)?.length)
+      .toBeGreaterThanOrEqual(3);
+    expect(locked).toContain("Excluir");
+
+    vi.restoreAllMocks();
+    mockWave7IntegrationsFetch({ canManage: true });
+    const unlocked = renderToStaticMarkup(
+      createElement("div", null, await IntegrationsPage({})),
+    );
+    expect(unlocked).not.toContain('class="license-lock-scope" disabled=""');
+    expect(unlocked).not.toContain("Licença bloqueada: criar, testar");
+  });
+
+  it("shows WAHA, Z-API and NOD API as 'Em breve' without a modal, but keeps existing connections manageable", async () => {
+    mockWave7IntegrationsFetch({ canManage: true });
+    const none = renderToStaticMarkup(
+      createElement("div", null, await IntegrationsPage({})),
+    );
+
+    for (const id of ["waha", "zapi", "nod_api"]) {
+      expect(none).toContain(
+        `data-integration="${id}" data-state="available" data-coming-soon="true"`,
+      );
+      expect(none).not.toContain(`id="integration-modal-${id}"`);
+    }
+    expect(none).toContain("Z-API: em breve");
+    // Cloud API is the only Meta WhatsApp card; Meta Ads is its own tab.
+    expect((none.match(/data-integration="meta_cloud"/g) ?? []).length).toBeLessThanOrEqual(1);
+    expect(none).toContain('src="/integrations/meta.svg"');
+    expect(none).not.toContain("meta-cloud.svg");
+
+    vi.restoreAllMocks();
+    mockWave7IntegrationsFetch({
+      canManage: true,
+      extraResponses: {
+        "/integrations/whatsapp-connections": [
+          {
+            id: "connection_zapi",
+            name: "Z-API Antiga",
+            displayName: null,
+            provider: "zapi",
+            status: "active",
+            lastHealthStatus: null,
+            lastHealthCheckedAt: null,
+            createdAt: "2026-07-02T03:00:00.000Z",
+          },
+        ],
+      },
+    });
+    const existing = renderToStaticMarkup(
+      createElement("div", null, await IntegrationsPage({})),
+    );
+
+    expect(existing).toContain('data-integration="zapi" data-state="active"');
+    expect(existing).not.toContain('data-integration="zapi" data-state="active" data-coming-soon');
+    expect(existing).toContain('id="integration-modal-zapi"');
+    expect(existing).toContain("Z-API Antiga");
+    expect(existing).toContain("Novas conexões deste provedor estão em breve");
+    expect(existing).toContain("Excluir");
+    expect(existing).not.toContain('name="provider" value="zapi"');
+  });
 
   it("shows a generic inbound detail error without payload or secret data", async () => {
     mockWave7IntegrationsFetch({
@@ -1604,10 +1336,12 @@ function mockWave7IntegrationsFetch({
   canManage,
   failMetaCapabilities = false,
   failInboundDetails = false,
+  extraResponses = {},
 }: {
   canManage: boolean;
   failMetaCapabilities?: boolean;
   failInboundDetails?: boolean;
+  extraResponses?: Record<string, unknown>;
 }) {
   const requestedPaths: string[] = [];
   const responses: Record<string, unknown> = {
@@ -1708,6 +1442,7 @@ function mockWave7IntegrationsFetch({
       },
     },
     "/integrations/inbound-webhooks/connection_wave7/channels": [wave7Channel],
+    ...extraResponses,
   };
 
   const fetchMock = vi
@@ -1957,3 +1692,18 @@ const wave7MetaConfiguration = {
     },
   ],
 };
+
+function paytRuleFixture(id: string, active: boolean) {
+  return providerRule({
+    id,
+    name: `Venda ${id}`,
+    triggerType: "provider_automation",
+    origin: "automation_payt",
+    eventName: "Purchase",
+    connectionId: "connection_wave7",
+    scope: "all_numbers",
+    active,
+    phrases: [],
+    automationSource: "payt",
+  });
+}

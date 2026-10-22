@@ -88,13 +88,59 @@ export function executionReasonLabel(reasonCode: string | null): string {
       "Falha interna ao criar o evento Meta",
     queue_recovery_pending: "Aguardando recuperacao da fila",
     qualified_lead_already_materialized: "Lead ja qualificado anteriormente",
+    // Venda da Payt (Fase 4a).
+    purchase_duplicate: "Venda repetida: recibo registrado, nada novo enviado",
+    rule_in_observation: "Regra em observação: nada é enviado à Meta",
+    payt_purchase_identity_missing:
+      "Venda sem vendedor ou pedido identificados",
+    payt_currency_unsupported:
+      "Venda em moeda fora de BRL, USD ou EUR: nada enviado à Meta",
+    provider_purchase_identity_missing:
+      "Venda sem vendedor ou pedido identificados",
+    payt_channel_missing_or_ambiguous:
+      "Número da venda não identificado ou ambíguo",
+    provider_purchase_channel_missing_or_ambiguous:
+      "Número da venda não identificado ou ambíguo",
+    payt_lead_other_channel:
+      "Lead de outro número: a regra desse número envia a venda",
+    automation_matched_payt_observation: "Reconhecido em observação",
+    payt_automation_v1_not_purchase: "Status da Payt não gera conversão",
+    payt_automation_v1_event_not_in_rule: "Evento da Payt fora desta regra",
+    // Unnichat (Fase 4b).
+    ctwa_missing: "Sem clique do anúncio (ctwa_clid): nada é enviado à Meta",
+    ctwa_ad_unavailable:
+      "Conversa sem anúncio de origem identificado e sem destino único de página e pixel",
+    route_ad_missing:
+      "Conversa sem anúncio de origem identificado e sem destino único de página e pixel",
+    ctwa_destination_ambiguous:
+      "Mais de um par de página e pixel possível: nada foi enviado",
+    ctwa_destination_not_authorized:
+      "Página e pixel deste número não estão autorizados",
+    unnichat_v1_invalid_payload:
+      "Corpo do webhook do Unnichat inválido ou incompleto",
+    unnichat_automation_v1_invalid_payload:
+      "Corpo da automação do Unnichat inválido ou incompleto",
+    unnichat_original_bind_mismatch:
+      "O contato não confere com a conversa original do anúncio",
+    inbound_webhook_production_unnichat_bind_mismatch:
+      "O contato não confere com a conversa original do anúncio",
+    inbound_webhook_unnichat_channel_binding_missing:
+      "A conexão do Unnichat está sem o número do cliente: recrie a conexão informando o número",
   };
 
   if (reasonCode.startsWith("provider_conversion_route_")) {
     return "Rota Meta indisponivel";
   }
 
-  return labels[reasonCode] ?? catalogReasonLabel(reasonCode);
+  if (labels[reasonCode]) {
+    return labels[reasonCode];
+  }
+
+  if (reasonCode.startsWith("inbound_webhook_production_unnichat_")) {
+    return "Envio do Unnichat recusado: o contato não confere com a conversa do anúncio";
+  }
+
+  return catalogReasonLabel(reasonCode);
 }
 
 function catalogReasonLabel(reasonCode: string): string {

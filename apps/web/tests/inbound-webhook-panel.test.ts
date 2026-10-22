@@ -373,13 +373,16 @@ describe("inbound webhook panel", () => {
     }
   });
 
-  it("keeps integrations focused on connection health and links to trigger settings", () => {
+  it("keeps integrations focused on connection health and links to the Conversões screen", () => {
     const html = renderPanel();
 
     expect(html).toContain("Gatilhos de conversao");
     expect(html).toContain("0 regra(s) nesta conexao");
-    expect(html).toContain('href="/settings#whatsapp-triggers"');
-    expect(html).toContain("Gerenciar gatilhos");
+    expect(html).toContain('href="/conversions"');
+    expect(html).toContain("Abrir Conversões");
+    expect(html).toContain("Crie e revise as regras na tela Conversões");
+    expect(html).not.toContain("whatsapp-triggers");
+    expect(html).not.toContain("Gerenciar gatilhos");
     expect(html).not.toContain("Qualificados e compras");
   });
 
@@ -429,7 +432,7 @@ describe("inbound webhook panel", () => {
     });
 
     expect(html).toContain("Prontidao parcial");
-    expect(html).toContain("<span>Rotas validas</span><strong>2/2</strong>");
+    expect(html).toContain("<span>Rotas válidas</span><strong>2/2</strong>");
     expect(html).toContain("<span>CTWA observados</span><strong>17</strong>");
     expect(html).toContain(
       "<span>Roteados preservados</span><strong>12</strong>",
@@ -479,9 +482,9 @@ describe("inbound webhook panel", () => {
     const analystHtml = renderPanel({ canManage: false });
 
     for (const command of [
-      "Adicionar conexao",
+      "Adicionar conexão",
       "Ativar envios automaticos",
-      "Pausar conexao",
+      "Pausar conexão",
       "Gerar nova URL",
       "Remover",
       "Pausar envio",
@@ -497,7 +500,7 @@ describe("inbound webhook panel", () => {
     expect(analystHtml).toContain("BM Vendas Atual");
     expect(analystHtml).toContain("Conta Suporte Atual");
     expect(analystHtml).toContain('aria-readonly="true"');
-    expect(analystHtml).not.toContain("Adicionar conexao");
+    expect(analystHtml).not.toContain("Adicionar conexão");
     expect(analystHtml).not.toContain("Gerar nova URL");
     expect(analystHtml).not.toContain("Pausar envio");
     expect(analystHtml).not.toContain("Adicionar rota");
@@ -577,6 +580,7 @@ function renderPanel({
       providerRulesEnabled: true,
       metaConfiguration,
       canManage,
+      canRecover: canManage,
       createAction: action,
       rotateSecretAction: action,
       setConnectionStatusAction: action,
@@ -587,6 +591,17 @@ function renderPanel({
     }),
   );
 }
+
+it("offers student historical CTWA recovery on the Meta connection", () => {
+  const html = renderPanel({ connections: [{
+    ...connectionView,
+    overview: { ...connectionView.overview, connection: {
+      ...connectionView.overview.connection, provider: "meta_cloud", parserVersion: "v1",
+    } },
+  }] });
+  expect(html).toContain("Recuperar CTWAs anteriores");
+  expect(html).toContain("CTWA roteado nao significa enviado");
+});
 
 function inboundRoute({
   id,

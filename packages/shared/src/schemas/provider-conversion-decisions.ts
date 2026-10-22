@@ -43,14 +43,57 @@ export const providerConversionDecisionAuthorTypeSchema = z.enum([
   "unknown",
 ]);
 
-export const providerConversionPaidLeadSchema = z.object({
-  id: identifierSchema,
-  phoneHash: identifierSchema,
-  campaignId: optionalIdentifierSchema,
-  adSetId: optionalIdentifierSchema,
-  adId: identifierSchema,
-  ctwaClid: identifierSchema,
+const authorizedCtwaDestinationBaseSchema = z.object({
+  kind: z.literal("authorized_ctwa_destination"),
+  workspaceId: identifierSchema,
+  channelId: identifierSchema,
+  connectionId: identifierSchema,
+  organizationId: identifierSchema,
+  providerChannelId: identifierSchema,
+  destinationId: identifierSchema,
+  businessConnectionId: identifierSchema,
+  credentialId: identifierSchema,
+  credentialFingerprint: identifierSchema,
 });
+
+// Persisted backend intent of a CTWA lead without ad id (ctwa_clid present):
+// the unique page + pixel the workspace's Meta setup authorizes for that
+// WhatsApp number. Authorization is re-resolved from the current workspace
+// configuration before materialization and dispatch, never from caller flags.
+// Only the page/pixel delivery exists in this edition: it uses the scopes of
+// the Meta login (business_management + ads_read/ads_management).
+export const authorizedCtwaDestinationSchema = authorizedCtwaDestinationBaseSchema
+  .extend({
+    deliveryKind: z.literal("page_pixel"),
+    pixelId: identifierSchema,
+    pageId: identifierSchema,
+  })
+  .strict();
+
+export type AuthorizedCtwaDestinationDto = z.infer<
+  typeof authorizedCtwaDestinationSchema
+>;
+
+// ctwa_clid is mandatory: a lead without it never reaches Meta. The ad id may
+// be missing only when the lead carries the typed CTWA origin proof.
+export const providerConversionPaidLeadSchema = z
+  .object({
+    id: identifierSchema,
+    phoneHash: identifierSchema,
+    campaignId: optionalIdentifierSchema,
+    adSetId: optionalIdentifierSchema,
+    adId: optionalIdentifierSchema,
+    ctwaClid: identifierSchema,
+    ctwaDestination: authorizedCtwaDestinationSchema.optional(),
+  })
+  .superRefine((lead, context) => {
+    if (!lead.adId && !lead.ctwaDestination)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "No-ad lead requires typed materialized CTWA origin proof",
+        path: ["ctwaDestination"],
+      });
+  });
 
 export const providerConversionPaidLeadResolutionSchema = z.discriminatedUnion(
   "status",
@@ -104,6 +147,12 @@ export const providerConversionDecisionOccurrenceSchema = z.object({
   externalEventId: optionalIdentifierSchema,
   externalMessageId: optionalIdentifierSchema,
   occurrenceKey: identifierSchema,
+  // Versioned sale identity (seller + order + event), set only by providers
+  // whose callbacks carry a merchant order (Payt). Never contains PII.
+  purchaseKey: z
+    .string()
+    .regex(/^purchase:[a-f0-9]{64}$/)
+    .optional(),
   businessDedupePolicy: z
     .discriminatedUnion("mode", [
       z.object({

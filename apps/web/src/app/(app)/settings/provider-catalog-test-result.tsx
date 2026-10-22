@@ -2,6 +2,7 @@ import type {
   StructuredCatalogMatchReasonCodeDto,
   StructuredCatalogTestMessageResultDto,
 } from "@wpptrack/shared";
+import { formatMoney } from "@wpptrack/shared";
 
 type ProviderCatalogTestResultProps = {
   result: StructuredCatalogTestMessageResultDto;
@@ -127,11 +128,4 @@ export function ProviderCatalogTestResult({
       ) : null}
     </section>
   );
-}
-
-function formatMoney(valueCents: number, currency: string): string {
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency,
-  }).format(valueCents / 100);
 }

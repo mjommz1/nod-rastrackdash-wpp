@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import OverviewPage from "../src/app/(app)/overview/page";
+import { overviewLeadsHref } from "../src/app/(app)/overview/overview-leads-links";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -166,7 +167,7 @@ describe("overview route", () => {
     expect(html).toContain("Periodo e contas");
     expect(html).toContain("BM Principal");
     expect(html).toContain("Conta Principal");
-    expect(html).toContain("Meta x conversas reais");
+    expect(html).toContain("Meta x leads novos");
     expect(html).toContain("4 conversas a mais na Meta");
     expect(html).toContain("daily-comparison-chart");
     expect(html).toContain("overview-primary-metrics");
@@ -477,5 +478,303 @@ describe("overview route", () => {
     expect(html).not.toContain("Qualidade do rastreamento");
     expect(html).not.toContain("0% conciliadas");
     expect(html).not.toContain("Black Friday WhatsApp");
+  });
+});
+
+// "Leads no período" (leads novos x leads que voltaram), ported from the SaaS.
+
+type LeadsBlockItem = {
+  key: string;
+  label: string;
+  value: string;
+  caption: string;
+  href: string | null;
+};
+
+/** Parses the "Leads no período" block in DOM order. */
+function leadsBlockItems(html: string): LeadsBlockItem[] {
+  const block = html.slice(
+    html.indexOf("overview-leads-block"),
+    html.indexOf("overview-funnel-panel"),
+  );
+  const pattern =
+    /data-leads-block="([^"]+)"><dt><span>(.*?)<\/span>.*?<\/dt><dd><strong>(.*?)<\/strong><small>(.*?)<\/small><\/dd>/g;
+  const text = (value: string) => value.replace(/<[^>]+>/g, "");
+  const items: LeadsBlockItem[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(block)) !== null) {
+    items.push({
+      key: match[1]!,
+      label: match[2]!,
+      value: text(match[3]!),
+      caption: text(match[4]!),
+      href:
+        /href="([^"]+)"/.exec(match[3]!)?.[1]?.replace(/&amp;/g, "&") ?? null,
+    });
+  }
+
+  return items;
+}
+
+async function renderOverviewWith(
+  report: Record<string, unknown>,
+  searchParams: Record<string, string>,
+) {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    const body = url.includes("/reports/campaigns")
+      ? report
+      : {
+          workspaceId: "workspace_1",
+          status: "connected",
+          businesses: [],
+          adAccounts: [],
+          pixels: [],
+          reportingAccounts: [],
+        };
+
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+
+  const element = await OverviewPage({
+    searchParams: Promise.resolve(searchParams),
+  });
+
+  return renderToStaticMarkup(createElement("div", null, element));
+}
+
+function leadsSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "workspace_summary",
+    name: "Resumo do workspace",
+    status: "active",
+    ...reportMetrics({
+      spendCents: 412000,
+      realConversations: 412,
+      costPerRealConversationCents: 1000,
+      returningLeads: 0,
+      repeatConversationLeads: 38,
+      adConversationEvents: 570,
+      ...overrides,
+    }),
+  };
+}
+
+describe("overview leads no periodo", () => {
+  it("always shows the four readings, zeros included, with the Leads lists behind them", async () => {
+    const html = await renderOverviewWith(
+      {
+        workspaceId: "workspace_1",
+        rangeLabel: "Ultimos 7 dias",
+        since: "2026-10-08",
+        until: "2026-10-14",
+        campaigns: [],
+        summary: leadsSummary(),
+      },
+      { since: "2026-10-08", until: "2026-10-14" },
+    );
+    const period = "attribution=paid&since=2026-10-08&until=2026-10-14";
+
+    expect(html).toContain("Leads no período");
+    expect(leadsBlockItems(html)).toEqual([
+      {
+        key: "new",
+        label: "Leads novos",
+        value: "412",
+        caption: "Custo por lead novo R$ 10,00",
+        href: `/leads?${period}`,
+      },
+      {
+        key: "returning",
+        label: "Voltaram por anúncio",
+        value: "0",
+        caption: "Já eram leads antes do período",
+        href: `/leads?${period}&base=returning`,
+      },
+      {
+        key: "repeat",
+        label: "Conversaram mais de uma vez",
+        value: "38",
+        caption: "2 ou mais conversas no período",
+        href: `/leads?${period}&base=repeat`,
+      },
+      {
+        key: "conversations",
+        label: "Conversas por anúncio",
+        value: "570",
+        caption: "Inclui conversas repetidas",
+        href: null,
+      },
+    ]);
+    expect(html).toContain(
+      "Já eram leads antes do período e chamaram de novo por anúncio.",
+    );
+    expect(html).toContain('aria-label="O que é: Conversas por anúncio"');
+    // Closed until hovered, focused or tapped (iOS taps toggle it).
+    expect(html).toContain('aria-expanded="false"');
+    // The KPI card keeps the headline and opens the same Leads list.
+    expect(html).toContain(
+      `<span>Leads novos</span><strong><a class="kpi-number-link" aria-label="412 - Ver os leads novos na lista de leads" href="/leads?${period.replace(/&/g, "&amp;")}">412</a></strong><small>1º contato no período</small>`,
+    );
+  });
+
+  it("drops the links the Leads page cannot reproduce", async () => {
+    const html = await renderOverviewWith(
+      {
+        workspaceId: "workspace_1",
+        rangeLabel: "Hoje",
+        since: "2026-10-14",
+        until: "2026-10-14",
+        campaigns: [],
+        summary: leadsSummary(),
+      },
+      { since: "2026-10-14", until: "2026-10-14", adAccountId: "act_1" },
+    );
+
+    expect(leadsBlockItems(html).map((item) => item.href)).toEqual([
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(html).not.toContain('href="/leads?');
+  });
+
+  it("shows a dash for numbers an older API does not send", async () => {
+    const html = await renderOverviewWith(
+      {
+        workspaceId: "workspace_1",
+        rangeLabel: "Hoje",
+        since: "2026-10-14",
+        until: "2026-10-14",
+        campaigns: [],
+        summary: {
+          id: "workspace_summary",
+          name: "Resumo do workspace",
+          status: "active",
+          ...reportMetrics({ realConversations: 3 }),
+        },
+      },
+      { since: "2026-10-14", until: "2026-10-14" },
+    );
+
+    expect(
+      leadsBlockItems(html).map((item) => [item.key, item.value, item.href]),
+    ).toEqual([
+      ["new", "3", "/leads?attribution=paid&since=2026-10-14&until=2026-10-14"],
+      // No link on "-": there is no number to reproduce.
+      ["returning", "-", null],
+      ["repeat", "-", null],
+      ["conversations", "-", null],
+    ]);
+  });
+
+  it("keeps the block visible with dashes when the API is unavailable", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+
+    const element = await OverviewPage({ searchParams: Promise.resolve({}) });
+    const html = renderToStaticMarkup(createElement("div", null, element));
+
+    expect(html).toContain("Leads no período");
+    expect(leadsBlockItems(html).map((item) => item.value)).toEqual([
+      "-",
+      "-",
+      "-",
+      "-",
+    ]);
+    expect(html).toContain("Aguardando resposta da API");
+  });
+});
+
+describe("overview daily returns", () => {
+  it("draws leads novos and returns as separate series with matching legend", async () => {
+    const html = await renderOverviewWith(
+      {
+        workspaceId: "workspace_1",
+        rangeLabel: "Ultimos 2 dias",
+        since: "2026-10-13",
+        until: "2026-10-14",
+        campaigns: [],
+        summary: leadsSummary({ realConversations: 3, returningLeads: 1 }),
+        dailyComparisonAvailable: true,
+        dailyComparison: [
+          {
+            date: "2026-10-13",
+            metaConversationsStarted: 3,
+            realConversations: 2,
+            returningLeads: 1,
+          },
+          {
+            date: "2026-10-14",
+            metaConversationsStarted: 2,
+            realConversations: 1,
+            returningLeads: 1,
+          },
+        ],
+      },
+      { since: "2026-10-13", until: "2026-10-14" },
+    );
+
+    // Same person back on both days: 1 in the block, 2 returns per day.
+    expect(
+      leadsBlockItems(html).find((item) => item.key === "returning")?.value,
+    ).toBe("1");
+    expect(html).toContain("Conversas contadas pela Meta <strong>5</strong>");
+    expect(html).toContain("Leads novos <strong>3</strong>");
+    expect(html).toContain("Retornos (por dia) <strong>2</strong>");
+    expect(html.match(/class="daily-bar returning"/g)).toHaveLength(2);
+    expect(html).toContain("13/10 - Retornos: 1");
+    expect(html).toContain("14/10 - Leads novos: 1");
+  });
+
+  it("keeps the returns series and legend at zero for an older API", async () => {
+    const html = await renderOverviewWith(
+      {
+        workspaceId: "workspace_1",
+        rangeLabel: "Hoje",
+        since: "2026-10-14",
+        until: "2026-10-14",
+        campaigns: [],
+        summary: leadsSummary({ realConversations: 1 }),
+        dailyComparisonAvailable: true,
+        dailyComparison: [
+          {
+            date: "2026-10-14",
+            metaConversationsStarted: 2,
+            realConversations: 1,
+          },
+        ],
+      },
+      { since: "2026-10-14", until: "2026-10-14" },
+    );
+
+    expect(html).toContain("Retornos (por dia) <strong>0</strong>");
+    expect(html).toContain("14/10 - Retornos: 0");
+  });
+});
+
+describe("overviewLeadsHref", () => {
+  it("builds the Leads list of each overview number", () => {
+    const period = { since: "2026-10-14", until: "2026-10-14" };
+
+    expect(overviewLeadsHref({}, period, "new")).toBe(
+      "/leads?attribution=paid&since=2026-10-14&until=2026-10-14",
+    );
+    expect(overviewLeadsHref({}, period, "returning")).toBe(
+      "/leads?attribution=paid&since=2026-10-14&until=2026-10-14&base=returning",
+    );
+    expect(overviewLeadsHref({}, period, "repeat")).toBe(
+      "/leads?attribution=paid&since=2026-10-14&until=2026-10-14&base=repeat",
+    );
+    expect(overviewLeadsHref({}, {}, "new")).toBe("/leads?attribution=paid");
+    expect(overviewLeadsHref({}, {}, "returning")).toBeNull();
+    expect(overviewLeadsHref({}, {}, "repeat")).toBeNull();
+    // The Leads page has no BM/account filter.
+    expect(overviewLeadsHref({ businessId: "bm" }, period, "new")).toBeNull();
+    expect(overviewLeadsHref({ adAccountId: "act" }, period, "new")).toBeNull();
   });
 });
