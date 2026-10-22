@@ -16113,9 +16113,19 @@ button.meta-manual-entry[aria-expanded="true"] {
 
 .overview-campaign-kind-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: 1fr;
   gap: 20px;
   margin-top: 16px;
+}
+
+.overview-campaign-kind .conversion-funnel {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.overview-campaign-kind-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
 .overview-campaign-kind {
@@ -16143,10 +16153,6 @@ button.meta-manual-entry[aria-expanded="true"] {
 
 .overview-campaign-kind-lead_form {
   border-color: rgba(188, 176, 200, 0.45);
-}
-
-.overview-campaign-kind-metrics {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .overview-campaign-kind-funnel {

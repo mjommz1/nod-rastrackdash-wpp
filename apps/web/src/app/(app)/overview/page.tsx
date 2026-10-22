@@ -1000,7 +1000,20 @@ function CampaignKindComparison({
             (campaign) => campaign.campaignKind === kind.key,
           );
           const total = sumCampaigns(rows);
-          const stages = total.funnelSteps;
+          // WhatsApp começa nas conversas registradas pela Meta; formulário
+          // não tem essa etapa (o cadastro já é o lead novo).
+          const stages: ReportFunnelStepDto[] =
+            kind.key === "whatsapp"
+              ? [
+                  {
+                    key: "meta_conversations",
+                    label: "Conversas Meta",
+                    value: total.metaConversationsStarted,
+                    costCents: total.costPerMetaConversationCents,
+                  },
+                  ...total.funnelSteps,
+                ]
+              : total.funnelSteps;
 
           return (
             <article
@@ -1049,19 +1062,15 @@ function CampaignKindComparison({
                       delta={`ROAS ${ratioLabel(total.roasAcquisition)}`}
                     />
                   </div>
-                  <ol className="overview-campaign-kind-funnel">
-                    {stages.map((stage) => (
-                      <li key={stage.key}>
-                        <span>{stage.label}</span>
-                        <strong>{stage.value}</strong>
-                        <small>
-                          {stage.costCents != null
-                            ? moneyLabel(stage.costCents)
-                            : "-"}
-                        </small>
-                      </li>
-                    ))}
-                  </ol>
+                  <ConversionFunnel
+                    eyebrow={kind.label}
+                    title="Conversao por etapas"
+                    description={`${rangeLabel}: ${rows.length} ${rows.length === 1 ? "campanha" : "campanhas"}, ${total.realConversations} leads novos chegaram a ${total.firstPurchases} ${total.firstPurchases === 1 ? "primeira compra" : "primeiras compras"}.`}
+                    stageCost={(stage) =>
+                      stage.costCents != null ? moneyLabel(stage.costCents) : "-"
+                    }
+                    stages={stages}
+                  />
                 </>
               )}
               <Link className="text-link" href={hrefFor(kind.key)}>
@@ -1122,11 +1131,16 @@ function ConversionFunnel({
   description,
   stageCost,
   stages,
+  eyebrow = "Funil integrado",
+  title = "Conversao por etapas",
 }: {
   description: string;
   /** Custo da etapa já formatado, na moeda (ou moedas) do recorte. */
   stageCost: (stage: ReportFunnelStepDto) => string;
   stages: ReportFunnelStepDto[];
+  /** Implatec: rótulo e título do bloco (o funil por tipo reaproveita). */
+  eyebrow?: string;
+  title?: string;
 }) {
   const palette = [
     "var(--mint)",
@@ -1195,8 +1209,8 @@ function ConversionFunnel({
     >
       <div className="conversion-funnel-heading">
         <div>
-          <span className="micro-label">Funil integrado</span>
-          <h2>Conversao por etapas</h2>
+          <span className="micro-label">{eyebrow}</span>
+          <h2>{title}</h2>
           <p>{description}</p>
         </div>
         <span className="conversion-funnel-stage-count">
